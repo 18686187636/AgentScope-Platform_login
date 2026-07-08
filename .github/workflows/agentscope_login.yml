@@ -1,8 +1,9 @@
-name: Agentscope Auto Operation (Cookie with Checks)
+# .github/workflows/agentscope_login.yml
+name: Agentscope Auto Operation
 
 on:
   schedule:
-    # 每 3 小时运行一次（UTC 时间）：0:00, 3:00, 6:00, ...
+    # 每 3 小时运行一次（UTC 时间）
     - cron: '0 */3 * * *'
   workflow_dispatch:   # 允许手动触发
 
@@ -23,13 +24,14 @@ jobs:
           pip install playwright requests
           playwright install --with-deps chromium
 
-      - name: Run script
+      - name: Run login script
         env:
-          AGENTSCOPE_COOKIE: ${{ secrets.AGENTSCOPE_COOKIE }}
-          AGENTSCOPE_HEADLESS: 'true'
+          # 从 GitHub Secret 读取 Base64 编码的完整浏览器状态
+          AGENTSCOPE_STATE: ${{ secrets.AGENTSCOPE_STATE }}
+          HEADLESS: 'true'
+          # 可选：Telegram 通知
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          LOGIN_SUCCESS_INDICATOR: ${{ secrets.LOGIN_SUCCESS_INDICATOR }}  # 可选
         run: python agentscope_login.py
 
       - name: Upload debug screenshots (on failure)
@@ -38,6 +40,4 @@ jobs:
         with:
           name: debug-screenshots
           path: |
-            error_screenshot.png
-            login_failed.png
-            button_not_found.png
+            *.png
