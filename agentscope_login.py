@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-支持多账号，第二个按钮仅精确匹配“打开QWENPAW”，等待时间延长至45秒
+多账号版本，逻辑与成功单账号脚本一致
 """
 import os
 import sys
@@ -40,8 +40,9 @@ def wait_for_token(page, timeout=60000):
     while (time.time() - start) < timeout / 1000:
         token = page.evaluate("() => localStorage.getItem('accessToken')")
         if token:
+            log("✅ 检测到 accessToken，登录成功")
             return True
-        error = page.locator(".error, .alert, .message:has-text('错误')")
+        error = page.locator(".error, .alert, .message:has-text('错误'), .message:has-text('失败')")
         if error.count():
             err_text = error.text_content()
             log(f"❌ 登录失败: {err_text}")
@@ -49,9 +50,9 @@ def wait_for_token(page, timeout=60000):
         time.sleep(2)
     return False
 
-def click_button_exact(page, button_text, timeout=45000):
+def click_button_robust(page, button_text, timeout=30000):
     """
-    只精确匹配 button_text，等待最长 timeout 毫秒
+    与成功单账号脚本完全一致
     """
     try:
         btn = page.wait_for_selector(
@@ -65,25 +66,27 @@ def click_button_exact(page, button_text, timeout=45000):
             time.sleep(0.5)
             try:
                 btn.click()
-                log(f"✅ 点击成功")
+                log(f"✅ 普通点击成功")
                 return True
-            except:
+            except Exception as click_err:
+                log(f"普通点击失败: {click_err}，尝试 JavaScript 点击...")
                 page.evaluate("(element) => element.click()", btn)
                 log(f"✅ JavaScript 点击成功")
                 return True
     except PlaywrightTimeoutError:
-        log(f"❌ 等待 '{button_text}' 超时（{timeout/1000}秒）")
-        # 打印按钮列表帮助调试
+        log(f"❌ 等待 {button_text} 超时")
         buttons = page.locator("button, a[role='button'], [role='button']")
         count = buttons.count()
         if count > 0:
             log("页面上找到的按钮文本：")
-            for i in range(min(count, 20)):
+            for i in range(min(count, 15)):
                 try:
                     text = buttons.nth(i).text_content()
                     log(f"  {i+1}: {text}")
                 except:
                     pass
+        else:
+            log("页面未找到任何按钮元素")
         return False
 
 def process_account(username, password, account_index):
@@ -127,32 +130,31 @@ def process_account(username, password, account_index):
                         success = wait_for_token(page, timeout=30000)
                 if not success:
                     screenshot(page, f"05_login_failed_{account_index}")
+                    storage = page.evaluate("() => localStorage")
+                    log(f"当前 localStorage 内容: {storage}")
                     raise RuntimeError(f"账号 {account_index} 登录失败")
 
             log(f"✅ 账号 {account_index} 登录成功")
             screenshot(page, f"06_logged_in_{account_index}")
 
-            # 等待页面完全稳定
+            # 等待页面稳定（与单账号一致）
             page.wait_for_load_state("networkidle", timeout=10000)
             time.sleep(3)
 
-            # 1. 点击第一个按钮
+            # 点击“一键部署QwenPaw”
             log(f"🔍 尝试点击 '{BUTTON_DEPLOY}' ...")
-            if not click_button_exact(page, BUTTON_DEPLOY, timeout=30000):
+            if not click_button_robust(page, BUTTON_DEPLOY):
                 screenshot(page, f"07_deploy_failed_{account_index}")
                 raise RuntimeError(f"账号 {account_index} 无法点击 '{BUTTON_DEPLOY}'")
             screenshot(page, f"07_deploy_clicked_{account_index}")
 
-            # 增加等待时间，让第二个按钮完全加载
-            log("⏳ 等待 15 秒，确保页面加载完成...")
-            time.sleep(15)
-            page.wait_for_load_state("networkidle", timeout=15000)
-            # 再额外等待 2 秒，给动态内容缓冲
-            time.sleep(2)
+            # 等待5秒（与单账号一致）
+            log("⏳ 等待 5 秒，让 '打开QWENPAW' 按钮出现...")
+            time.sleep(5)
 
-            # 2. 点击第二个按钮（仅精确匹配，超时45秒）
+            # 点击“打开QWENPAW”
             log(f"🔍 尝试点击 '{BUTTON_QWENPAW}' ...")
-            if not click_button_exact(page, BUTTON_QWENPAW, timeout=45000):
+            if not click_button_robust(page, BUTTON_QWENPAW):
                 screenshot(page, f"08_qwen_failed_{account_index}")
                 raise RuntimeError(f"账号 {account_index} 无法点击 '{BUTTON_QWENPAW}'")
             screenshot(page, f"08_qwen_clicked_{account_index}")
