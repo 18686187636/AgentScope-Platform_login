@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-支持单账号和多账号（通过 ACCOUNTS_JSON 环境变量）
+支持多账号，第二个按钮仅精确匹配“打开QWENPAW”，等待时间延长至45秒
 """
 import os
 import sys
@@ -10,7 +10,6 @@ import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from datetime import datetime
 
-# 环境变量
 HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TG_CHAT_ID", "")
@@ -18,7 +17,6 @@ BUTTON_DEPLOY = os.getenv("BUTTON_DEPLOY", "一键部署QwenPaw")
 BUTTON_QWENPAW = os.getenv("BUTTON_QWENPAW", "打开QWENPAW")
 LOGIN_URL = "https://platform.agentscope.io/login"
 
-# ---------- 日志 ----------
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
 
@@ -30,7 +28,6 @@ def send_tg(msg):
         except Exception as e:
             log(f"Telegram 发送失败: {e}")
 
-# ---------- 截图 ----------
 def screenshot(page, name):
     try:
         page.screenshot(path=f"{name}.png")
@@ -38,15 +35,13 @@ def screenshot(page, name):
     except Exception as e:
         log(f"截图失败 {name}: {e}")
 
-# ---------- 等待 token ----------
 def wait_for_token(page, timeout=60000):
     start = time.time()
     while (time.time() - start) < timeout / 1000:
         token = page.evaluate("() => localStorage.getItem('accessToken')")
         if token:
-            log("✅ 检测到 accessToken，登录成功")
             return True
-        error = page.locator(".error, .alert, .message:has-text('错误'), .message:has-text('失败')")
+        error = page.locator(".error, .alert, .message:has-text('错误')")
         if error.count():
             err_text = error.text_content()
             log(f"❌ 登录失败: {err_text}")
@@ -54,8 +49,10 @@ def wait_for_token(page, timeout=60000):
         time.sleep(2)
     return False
 
-# ---------- 稳健点击 ----------
-def click_button_robust(page, button_text, timeout=30000):
+def click_button_exact(page, button_text, timeout=45000):
+    """
+    只精确匹配 button_text，等待最长 timeout 毫秒
+    """
     try:
         btn = page.wait_for_selector(
             f"button:has-text('{button_text}'), a:has-text('{button_text}'), [role='button']:has-text('{button_text}')",
@@ -68,20 +65,20 @@ def click_button_robust(page, button_text, timeout=30000):
             time.sleep(0.5)
             try:
                 btn.click()
-                log(f"✅ 普通点击成功")
+                log(f"✅ 点击成功")
                 return True
             except:
                 page.evaluate("(element) => element.click()", btn)
                 log(f"✅ JavaScript 点击成功")
                 return True
     except PlaywrightTimeoutError:
-        log(f"❌ 等待 {button_text} 超时")
-        # 打印按钮列表
+        log(f"❌ 等待 '{button_text}' 超时（{timeout/1000}秒）")
+        # 打印按钮列表帮助调试
         buttons = page.locator("button, a[role='button'], [role='button']")
         count = buttons.count()
         if count > 0:
             log("页面上找到的按钮文本：")
-            for i in range(min(count, 15)):
+            for i in range(min(count, 20)):
                 try:
                     text = buttons.nth(i).text_content()
                     log(f"  {i+1}: {text}")
@@ -89,7 +86,6 @@ def click_button_robust(page, button_text, timeout=30000):
                     pass
         return False
 
-# ---------- 处理单个账号 ----------
 def process_account(username, password, account_index):
     log(f"--- 开始处理账号 {account_index}: {username} ---")
     with sync_playwright() as p:
@@ -125,37 +121,38 @@ def process_account(username, password, account_index):
                 log("⏳ 等待 accessToken 出现...")
                 success = wait_for_token(page, timeout=60000)
                 if not success:
-                    # 尝试点击登录按钮
-                    log("⚠️ Enter 提交未生效，尝试点击登录按钮...")
                     submit_btn = page.locator("button:has-text('登录'), button[type='submit']")
                     if submit_btn.count():
                         submit_btn.click()
                         success = wait_for_token(page, timeout=30000)
-
                 if not success:
                     screenshot(page, f"05_login_failed_{account_index}")
-                    storage = page.evaluate("() => localStorage")
-                    log(f"当前 localStorage 内容: {storage}")
                     raise RuntimeError(f"账号 {account_index} 登录失败")
 
             log(f"✅ 账号 {account_index} 登录成功")
             screenshot(page, f"06_logged_in_{account_index}")
 
+            # 等待页面完全稳定
             page.wait_for_load_state("networkidle", timeout=10000)
             time.sleep(3)
 
-            # 点击第一个按钮
+            # 1. 点击第一个按钮
             log(f"🔍 尝试点击 '{BUTTON_DEPLOY}' ...")
-            if not click_button_robust(page, BUTTON_DEPLOY):
+            if not click_button_exact(page, BUTTON_DEPLOY, timeout=30000):
                 screenshot(page, f"07_deploy_failed_{account_index}")
                 raise RuntimeError(f"账号 {account_index} 无法点击 '{BUTTON_DEPLOY}'")
             screenshot(page, f"07_deploy_clicked_{account_index}")
-            log("⏳ 等待 5 秒...")
-            time.sleep(5)
 
-            # 点击第二个按钮
+            # 增加等待时间，让第二个按钮完全加载
+            log("⏳ 等待 15 秒，确保页面加载完成...")
+            time.sleep(15)
+            page.wait_for_load_state("networkidle", timeout=15000)
+            # 再额外等待 2 秒，给动态内容缓冲
+            time.sleep(2)
+
+            # 2. 点击第二个按钮（仅精确匹配，超时45秒）
             log(f"🔍 尝试点击 '{BUTTON_QWENPAW}' ...")
-            if not click_button_robust(page, BUTTON_QWENPAW):
+            if not click_button_exact(page, BUTTON_QWENPAW, timeout=45000):
                 screenshot(page, f"08_qwen_failed_{account_index}")
                 raise RuntimeError(f"账号 {account_index} 无法点击 '{BUTTON_QWENPAW}'")
             screenshot(page, f"08_qwen_clicked_{account_index}")
@@ -171,7 +168,6 @@ def process_account(username, password, account_index):
             browser.close()
             return False
 
-# ---------- 主函数 ----------
 def run():
     accounts_json = os.getenv("ACCOUNTS_JSON", "")
     if accounts_json:
@@ -181,7 +177,6 @@ def run():
             log("❌ 解析 ACCOUNTS_JSON 失败")
             sys.exit(1)
     else:
-        # 单账号兼容
         username = os.getenv("AGENTSCOPE_USERNAME", "")
         password = os.getenv("AGENTSCOPE_PASSWORD", "")
         if not username or not password:
@@ -201,7 +196,6 @@ def run():
             success_count += 1
         else:
             fail_count += 1
-        # 每个账号之间稍作间隔
         time.sleep(2)
 
     log(f"处理完成：成功 {success_count} 个，失败 {fail_count} 个")
