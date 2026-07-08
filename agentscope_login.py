@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-多账号脚本
+多账号脚本，支持逗号分隔的按钮文本列表
 """
 import os
 import sys
@@ -13,14 +13,15 @@ from datetime import datetime
 HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TG_CHAT_ID", "")
-BUTTON_DEPLOY = os.getenv("BUTTON_DEPLOY", "一键部署 QwenPaw")
-BUTTON_QWENPAW_ENV = os.getenv("BUTTON_QWENPAW", "打开QWENPAW,Open QWENPAW")
-LOGIN_URL = "https://platform.agentscope.io/login"
 
-# 构建要尝试的 QwenPaw 按钮文本列表（自动补充带空格的版本）
-qwenvars = [t.strip() for t in BUTTON_QWENPAW_ENV.split(',') if t.strip()]
-additional = ["打开 QWENPAW", "Open QWENPAW"]
-QWENPAW_TEXTS = list(dict.fromkeys(qwenvars + additional))  # 去重保留顺序
+# 读取环境变量并分割为列表
+DEPLOY_RAW = os.getenv("BUTTON_DEPLOY", "一键部署QwenPaw")
+DEPLOY_TEXTS = [t.strip() for t in DEPLOY_RAW.split(',') if t.strip()]
+
+QWEN_RAW = os.getenv("BUTTON_QWENPAW", "打开QWENPAW,打开 QWENPAW,Open QWENPAW")
+QWEN_TEXTS = [t.strip() for t in QWEN_RAW.split(',') if t.strip()]
+
+LOGIN_URL = "https://platform.agentscope.io/login"
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
@@ -55,6 +56,9 @@ def wait_for_token(page, timeout=60000):
     return False
 
 def click_button_multitext(page, button_texts, timeout_per_text=15000, total_timeout=60000):
+    """
+    依次尝试多个按钮文本，找到第一个可见的并点击。
+    """
     start_time = time.time()
     for text in button_texts:
         remaining = total_timeout - (time.time() - start_time) * 1000
@@ -82,6 +86,7 @@ def click_button_multitext(page, button_texts, timeout_per_text=15000, total_tim
         except PlaywrightTimeoutError:
             log(f"⏳ 未找到 '{text}'，继续尝试下一个...")
             continue
+    # 全部失败
     log(f"❌ 所有文本均未找到或点击失败：{button_texts}")
     buttons = page.locator("button, a[role='button'], [role='button']")
     count = buttons.count()
@@ -144,21 +149,21 @@ def process_account(username, password, account_index):
             page.wait_for_load_state("networkidle", timeout=10000)
             time.sleep(3)
 
-            # 1. 点击第一个按钮
-            log(f"🔍 尝试点击 '{BUTTON_DEPLOY}' ...")
-            if not click_button_multitext(page, [BUTTON_DEPLOY], timeout_per_text=30000, total_timeout=30000):
+            # 1. 点击第一个按钮（使用 DEPLOY_TEXTS 列表）
+            log(f"🔍 尝试点击 {DEPLOY_TEXTS} ...")
+            if not click_button_multitext(page, DEPLOY_TEXTS, timeout_per_text=30000, total_timeout=30000):
                 screenshot(page, f"07_deploy_failed_{account_index}")
-                raise RuntimeError(f"账号 {account_index} 无法点击 '{BUTTON_DEPLOY}'")
+                raise RuntimeError(f"账号 {account_index} 无法点击第一个按钮（尝试了 {DEPLOY_TEXTS}）")
             screenshot(page, f"07_deploy_clicked_{account_index}")
             log("⏳ 等待 15 秒，确保页面加载完成...")
             time.sleep(15)
             page.wait_for_load_state("networkidle", timeout=10000)
 
-            # 2. 点击第二个按钮（自动包含带空格的版本）
-            log(f"🔍 尝试点击 {QWENPAW_TEXTS} ...")
-            if not click_button_multitext(page, QWENPAW_TEXTS, timeout_per_text=15000, total_timeout=60000):
+            # 2. 点击第二个按钮（使用 QWEN_TEXTS 列表）
+            log(f"🔍 尝试点击 {QWEN_TEXTS} ...")
+            if not click_button_multitext(page, QWEN_TEXTS, timeout_per_text=15000, total_timeout=60000):
                 screenshot(page, f"08_qwen_failed_{account_index}")
-                raise RuntimeError(f"账号 {account_index} 无法点击第二个按钮（尝试了 {QWENPAW_TEXTS}）")
+                raise RuntimeError(f"账号 {account_index} 无法点击第二个按钮（尝试了 {QWEN_TEXTS}）")
             screenshot(page, f"08_qwen_clicked_{account_index}")
             log("⏳ 等待 5 秒...")
             time.sleep(5)
