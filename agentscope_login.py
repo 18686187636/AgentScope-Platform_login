@@ -13,7 +13,7 @@ from datetime import datetime
 HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TG_CHAT_ID", "")
-BUTTON_DEPLOY = os.getenv("BUTTON_DEPLOY", "一键部署QwenPaw")
+BUTTON_DEPLOY = os.getenv("BUTTON_DEPLOY", "一键配置QwenPaw")
 BUTTON_QWENPAW_ENV = os.getenv("BUTTON_QWENPAW", "打开QWENPAW,Open QWENPAW")
 LOGIN_URL = "https://platform.agentscope.io/login"
 
