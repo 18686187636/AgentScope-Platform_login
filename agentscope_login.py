@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-多账号脚本，自动匹配 "打开QWENPAW"、"打开 QWENPAW"、"Open QWENPAW" 等变体。
+多账号脚本
 """
 import os
 import sys
