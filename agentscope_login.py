@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-用户名/密码登录，使用多种信号检测登录成功
-增强等待和诊断
+用户名/密码登录，通过检测 localStorage 中的 accessToken 判断登录成功。
+不再依赖页面按钮文本匹配，无视字体和渲染问题。
 """
 import os
 import sys
@@ -39,51 +39,27 @@ def screenshot(page, name):
     except Exception as e:
         log(f"截图失败 {name}: {e}")
 
-def wait_for_login_success(page, timeout=45000):
+def wait_for_token(page, timeout=60000):
     """
-    使用多种信号检测登录成功
+    等待 localStorage 中出现 accessToken
     """
-    start_time = time.time()
-    while (time.time() - start_time) < timeout / 1000:
-        # 1. 检查 URL 是否跳离 /login
-        if "/login" not in page.url:
-            log("✅ 检测到 URL 跳转")
+    start = time.time()
+    while (time.time() - start) < timeout / 1000:
+        token = page.evaluate("() => localStorage.getItem('accessToken')")
+        if token:
+            log("✅ 检测到 accessToken，登录成功")
             return True
-        # 2. 检查退出按钮
-        try:
-            if page.locator("button:has-text('退出'), a:has-text('退出'), button:has-text('Logout')").count() > 0:
-                log("✅ 检测到退出按钮")
-                return True
-        except:
-            pass
-        # 3. 检查用户头像或用户菜单（常见 class）
-        try:
-            if page.locator("img[alt*='avatar'], .avatar, .user-avatar, [class*='avatar']").count() > 0:
-                log("✅ 检测到用户头像")
-                return True
-        except:
-            pass
-        # 4. 检查页面标题是否包含非登录字样
-        try:
-            title = page.title()
-            if "控制台" in title or "Dashboard" in title or "平台" in title:
-                log(f"✅ 页面标题: {title}")
-                return True
-        except:
-            pass
-        # 5. 检查“一键配置QwenPaw”按钮
-        try:
-            if page.locator(f"button:has-text('{BUTTON_DEPLOY}'), a:has-text('{BUTTON_DEPLOY}')").count() > 0:
-                log(f"✅ 检测到 '{BUTTON_DEPLOY}' 按钮")
-                return True
-        except:
-            pass
-        # 每 2 秒检查一次
+        # 检查是否有错误提示
+        error = page.locator(".error, .alert, .message:has-text('错误')")
+        if error.count():
+            err_text = error.text_content()
+            log(f"❌ 登录失败: {err_text}")
+            return False
         time.sleep(2)
     return False
 
 def run():
-    log("启动 Agentscope 自动登录（增强检测）")
+    log("启动 Agentscope 自动登录（基于 localStorage 检测）")
     if not USERNAME or not PASSWORD:
         log("❌ 请设置 AGENTSCOPE_USERNAME 和 AGENTSCOPE_PASSWORD")
         sys.exit(1)
@@ -96,14 +72,14 @@ def run():
         try:
             log(f"🌐 访问登录页面: {LOGIN_URL}")
             page.goto(LOGIN_URL, wait_until="domcontentloaded")
-            # 等待可能的重定向
             page.wait_for_load_state("networkidle", timeout=10000)
             time.sleep(2)
             screenshot(page, "01_login_page")
 
-            # 如果已经登录（URL 不在 /login 且没有登录按钮）
-            if "/login" not in page.url and page.locator("button:has-text('登录')").count() == 0:
-                log("✅ 似乎已登录，跳过登录流程")
+            # 先检查是否已经登录（通过 localStorage）
+            token = page.evaluate("() => localStorage.getItem('accessToken')")
+            if token:
+                log("✅ 已检测到 accessToken，跳过登录")
             else:
                 log("📝 填写登录表单...")
                 username_input = page.wait_for_selector("#account", timeout=10000)
@@ -122,37 +98,25 @@ def run():
                     timeout=10000
                 )
                 submit_btn.click()
-                log("⏳ 已点击登录按钮，等待登录成功...")
+                log("⏳ 已点击登录按钮，等待 accessToken 出现...")
                 screenshot(page, "04_after_click")
 
-                # 等待登录成功（最长 45 秒）
-                success = wait_for_login_success(page, timeout=45000)
+                success = wait_for_token(page, timeout=60000)
                 if not success:
                     screenshot(page, "05_login_failed")
-                    # 输出页面信息帮助调试
-                    log(f"当前 URL: {page.url}")
-                    log(f"页面标题: {page.title()}")
-                    # 尝试获取错误信息
-                    error = page.locator(".error, .alert, .message:has-text('错误')")
-                    if error.count():
-                        err_text = error.text_content()
-                        log(f"❌ 登录失败: {err_text}")
-                        raise RuntimeError(f"登录失败: {err_text}")
-                    else:
-                        # 输出部分 HTML
-                        html_preview = page.content()[:1000]
-                        log(f"页面内容预览: {html_preview}")
-                        raise RuntimeError("登录超时：未检测到任何登录成功信号")
+                    # 打印当前 localStorage 内容
+                    storage = page.evaluate("() => localStorage")
+                    log(f"当前 localStorage 内容: {storage}")
+                    raise RuntimeError("登录超时或失败，未检测到 accessToken")
 
             log("✅ 登录成功")
             screenshot(page, "06_logged_in")
 
-            # 等待页面完全加载
+            # 等待页面加载
             page.wait_for_load_state("networkidle", timeout=10000)
             time.sleep(2)
 
-            # 点击“打开QWENPAW”（跳过第一个按钮，因为登录后可能直接显示第二个）
-            # 但为了以防万一，先检测第一个按钮是否存在，如果不存在直接点第二个
+            # 点击“一键配置QwenPaw”（如果存在）
             try:
                 deploy_btn = page.locator(f"button:has-text('{BUTTON_DEPLOY}'), a:has-text('{BUTTON_DEPLOY}')")
                 if deploy_btn.count() > 0 and deploy_btn.is_visible():
