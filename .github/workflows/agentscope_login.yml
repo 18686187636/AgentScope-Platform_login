@@ -1,1 +1,43 @@
+name: Agentscope Auto Operation (Cookie with Checks)
 
+on:
+  schedule:
+    # 每 3 小时运行一次（UTC 时间）：0:00, 3:00, 6:00, ...
+    - cron: '0 */3 * * *'
+  workflow_dispatch:   # 允许手动触发
+
+jobs:
+  auto:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install playwright requests
+          playwright install --with-deps chromium
+
+      - name: Run script
+        env:
+          AGENTSCOPE_COOKIE: ${{ secrets.AGENTSCOPE_COOKIE }}
+          AGENTSCOPE_HEADLESS: 'true'
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          LOGIN_SUCCESS_INDICATOR: ${{ secrets.LOGIN_SUCCESS_INDICATOR }}  # 可选
+        run: python agentscope_login.py
+
+      - name: Upload debug screenshots (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: |
+            error_screenshot.png
+            login_failed.png
+            button_not_found.png
