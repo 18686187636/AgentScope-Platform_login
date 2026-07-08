@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-登录后先点击“一键配置QwenPaw”，等待其生效后再点击“打开QWENPAW”
-使用 Enter 提交登录，基于 localStorage 检测登录成功
+使用多种策略定位“一键部署QwenPaw”和“打开QWENPAW”按钮
+支持文本包含匹配、类名匹配等
 """
 import os
 import sys
@@ -16,7 +16,8 @@ HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TG_CHAT_ID", "")
 
-BUTTON_DEPLOY = os.getenv("BUTTON_DEPLOY", "一键配置QwenPaw")
+# 按钮文本（环境变量可覆盖）
+BUTTON_DEPLOY = os.getenv("BUTTON_DEPLOY", "一键部署QwenPaw")
 BUTTON_QWENPAW = os.getenv("BUTTON_QWENPAW", "打开QWENPAW")
 
 LOGIN_URL = "https://platform.agentscope.io/login"
@@ -54,8 +55,55 @@ def wait_for_token(page, timeout=60000):
         time.sleep(2)
     return False
 
+def click_button(page, button_text, timeout=15000):
+    """
+    使用多种策略点击按钮
+    """
+    strategies = [
+        f"button:has-text('{button_text}')",
+        f"a:has-text('{button_text}')",
+        f"[role='button']:has-text('{button_text}')",
+        # 不区分大小写
+        f"button:has-text('{button_text}')",  # Playwright 默认不区分大小写
+        # 包含匹配（如果文本有前后缀）
+        f"button:has-text('{button_text}')",
+        # 通过部分文本匹配（比如只匹配“部署”和“QwenPaw”）
+        f"button:has-text('QwenPaw')",
+        f"button:has-text('部署')",
+        f"button:has-text('配置')",
+        # 通过 class 或 id（如果需要，可以添加具体类名）
+    ]
+    # 尝试每个策略
+    for selector in strategies:
+        try:
+            btn = page.locator(selector)
+            if btn.count() > 0:
+                # 检查是否可见
+                if btn.is_visible():
+                    btn.click()
+                    log(f"✅ 使用选择器 '{selector}' 点击成功")
+                    return True
+                else:
+                    log(f"⚠️ 选择器 '{selector}' 匹配但不可见")
+        except:
+            continue
+    # 如果所有策略失败，打印页面上的所有按钮文本帮助调试
+    log("⚠️ 所有定位策略失败，尝试获取页面上所有按钮的文本...")
+    buttons = page.locator("button, a[role='button'], [role='button']")
+    count = buttons.count()
+    if count > 0:
+        for i in range(min(count, 10)):
+            try:
+                text = buttons.nth(i).text_content()
+                log(f" 按钮{i+1}: {text}")
+            except:
+                pass
+    else:
+        log("页面未找到任何按钮元素")
+    return False
+
 def run():
-    log("启动 Agentscope 自动登录（先点击配置，再点打开）")
+    log("启动 Agentscope 自动登录（多策略按钮定位）")
     if not USERNAME or not PASSWORD:
         log("❌ 请设置 AGENTSCOPE_USERNAME 和 AGENTSCOPE_PASSWORD")
         sys.exit(1)
@@ -72,7 +120,6 @@ def run():
             time.sleep(2)
             screenshot(page, "01_login_page")
 
-            # 检查是否已登录
             token = page.evaluate("() => localStorage.getItem('accessToken')")
             if token:
                 log("✅ 已检测到 accessToken，跳过登录")
@@ -111,58 +158,33 @@ def run():
             log("✅ 登录成功")
             screenshot(page, "06_logged_in")
 
-            # 等待页面完全加载
             page.wait_for_load_state("networkidle", timeout=10000)
-            time.sleep(2)
+            time.sleep(3)  # 等待页面完全渲染
 
-            # ---------- 第一步：点击“一键配置QwenPaw” ----------
-            log(f"🔍 查找 '{BUTTON_DEPLOY}' 按钮...")
-            try:
-                deploy_btn = page.wait_for_selector(
-                    f"button:has-text('{BUTTON_DEPLOY}'), a:has-text('{BUTTON_DEPLOY}')",
-                    timeout=15000
-                )
-                if deploy_btn and deploy_btn.is_visible():
-                    deploy_btn.click()
-                    log(f"✅ 点击 '{BUTTON_DEPLOY}' 成功")
-                    screenshot(page, "07_deploy_clicked")
-                    # 点击后等待一段时间，让第二个按钮出现
-                    log("⏳ 等待 5 秒，让 '打开QWENPAW' 按钮出现...")
-                    time.sleep(5)
-                else:
-                    log(f"⚠️ 按钮 '{BUTTON_DEPLOY}' 不可见")
-                    screenshot(page, "07_deploy_not_found")
-                    # 如果第一个按钮不存在，可能已经处于可点击第二个的状态？但根据逻辑，必须先点第一个，所以报错
-                    raise RuntimeError("未找到 '一键配置QwenPaw' 按钮，无法继续")
-            except PlaywrightTimeoutError:
-                log(f"❌ 超时未找到 '{BUTTON_DEPLOY}' 按钮")
-                screenshot(page, "07_deploy_timeout")
-                raise RuntimeError("超时未找到 '一键配置QwenPaw' 按钮")
+            # 第一步：点击第一个按钮
+            log(f"🔍 尝试点击 '{BUTTON_DEPLOY}' ...")
+            success = click_button(page, BUTTON_DEPLOY, timeout=15000)
+            if not success:
+                screenshot(page, "07_deploy_failed")
+                raise RuntimeError(f"无法点击 '{BUTTON_DEPLOY}' 按钮")
+            else:
+                screenshot(page, "07_deploy_clicked")
+                log("⏳ 等待 5 秒，让第二个按钮出现...")
+                time.sleep(5)
 
-            # ---------- 第二步：点击“打开QWENPAW” ----------
-            log(f"🔍 查找 '{BUTTON_QWENPAW}' 按钮...")
-            try:
-                qwen_btn = page.wait_for_selector(
-                    f"button:has-text('{BUTTON_QWENPAW}'), a:has-text('{BUTTON_QWENPAW}')",
-                    timeout=15000
-                )
-                if qwen_btn and qwen_btn.is_visible():
-                    qwen_btn.click()
-                    log(f"✅ 点击 '{BUTTON_QWENPAW}' 成功")
-                    log("⏳ 等待 5 秒...")
-                    time.sleep(5)
-                    screenshot(page, "08_qwen_clicked")
-                else:
-                    log(f"⚠️ 按钮 '{BUTTON_QWENPAW}' 不可见")
-                    screenshot(page, "08_qwen_not_found")
-                    raise RuntimeError("未找到 '打开QWENPAW' 按钮")
-            except PlaywrightTimeoutError:
-                log(f"❌ 超时未找到 '{BUTTON_QWENPAW}' 按钮")
-                screenshot(page, "08_qwen_timeout")
-                raise RuntimeError("超时未找到 '打开QWENPAW' 按钮")
+            # 第二步：点击第二个按钮
+            log(f"🔍 尝试点击 '{BUTTON_QWENPAW}' ...")
+            success = click_button(page, BUTTON_QWENPAW, timeout=15000)
+            if not success:
+                screenshot(page, "08_qwen_failed")
+                raise RuntimeError(f"无法点击 '{BUTTON_QWENPAW}' 按钮")
+            else:
+                screenshot(page, "08_qwen_clicked")
+                log("⏳ 等待 5 秒...")
+                time.sleep(5)
 
             log("🎉 脚本执行完毕")
-            send_tg("✅ Agentscope 自动操作成功（依次点击了两个按钮）")
+            send_tg("✅ Agentscope 自动操作成功")
 
         except Exception as e:
             log(f"❌ 异常: {e}")
