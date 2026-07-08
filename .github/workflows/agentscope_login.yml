@@ -1,4 +1,4 @@
-name: Agentscope Auto Login (Multi-Account Loop)
+name: Agentscope Auto Login
 
 on:
   schedule:
@@ -23,13 +23,13 @@ jobs:
         env:
           ACCOUNTS_JSON: ${{ secrets.ACCOUNTS_JSON }}
           HEADLESS: 'true'
-          BUTTON_DEPLOY: '一键部署QwenPaw'
-          BUTTON_QWENPAW: '打开QWENPAW'
+          BUTTON_DEPLOY: '一键配置QwenPaw'   # 明确指定，或者使用脚本默认值
+          BUTTON_QWENPAW: '打开QWENPAW,打开 QWENPAW,Open QWENPAW'
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: python agentscope_login.py
-      - name: Upload screenshots (if failure)
-        if: failure()
+      - name: Upload screenshots (always)
+        if: always()   # 无论成功失败都上传
         uses: actions/upload-artifact@v4
         with:
           name: debug-screenshots
