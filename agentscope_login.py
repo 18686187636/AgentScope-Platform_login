@@ -7,7 +7,12 @@ STATE_B64 = os.getenv("AGENTSCOPE_STATE", "")
 HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TG_CHAT_ID", "")
+
+# 从环境变量读取 Cookie 值（手动提取的）
+QWENPAW_COOKIE_VALUE = os.getenv("QWENPAW_COOKIE_VALUE", "")
+
 REFRESH_URL = "https://platform.agentscope.io/api/v1/auth/refresh"
+COOKIE_NAME = "qwenpaw_console_token"
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
@@ -20,24 +25,16 @@ def send_tg(msg):
         except Exception as e:
             log(f"Telegram 发送失败: {e}")
 
-def get_cookie_from_state(state, name="qwenpaw_console_token"):
+def get_cookie_from_state(state, name):
     for c in state.get("cookies", []):
         if c.get("name") == name:
             return c.get("value")
     return None
 
-def get_local_storage_item(state, key):
-    """从 state 的 origins 中提取 localStorage 指定键的值"""
-    for origin in state.get("origins", []):
-        for item in origin.get("localStorage", []):
-            if item.get("name") == key:
-                return item.get("value")
-    return None
-
 def refresh_token(refresh_token_str, cookie_value):
     headers = {
         "Content-Type": "application/json",
-        "Cookie": f"qwenpaw_console_token={cookie_value}",
+        "Cookie": f"{COOKIE_NAME}={cookie_value}",
         "Origin": "https://platform.agentscope.io",
         "Referer": "https://platform.agentscope.io/",
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
@@ -70,50 +67,51 @@ def run():
         log(f"❌ 解码失败: {e}")
         sys.exit(1)
 
-    # 诊断：打印状态概要
-    log(f"状态中 Cookie 数量: {len(state.get('cookies', []))}")
-    log(f"状态中 Origins 数量: {len(state.get('origins', []))}")
-    # 检查 refreshToken 是否存在
-    refresh_in_state = get_local_storage_item(state, "refreshToken")
-    if refresh_in_state:
-        log("✅ 状态中包含 refreshToken")
-    else:
-        log("⚠️ 状态中未找到 refreshToken")
-
-    cookie_value = get_cookie_from_state(state)
+    # 获取 Cookie：优先环境变量，否则从 state 读取
+    cookie_value = QWENPAW_COOKIE_VALUE or get_cookie_from_state(state, COOKIE_NAME)
     if cookie_value:
-        log("✅ 找到 qwenpaw_console_token")
+        log("✅ 已获取 qwenpaw_console_token")
     else:
-        log("⚠️ 未找到 qwenpaw_console_token")
+        log("⚠️ 未找到 qwenpaw_console_token，刷新可能失败")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS, args=["--no-sandbox"])
         context = browser.new_context(storage_state=state)
+        # 如果环境变量提供了 Cookie，手动添加
+        if cookie_value and not get_cookie_from_state(state, COOKIE_NAME):
+            # 注意：如果 state 中已有，就不重复添加，避免冲突
+            # 但 state 中没有，我们手动添加
+            context.add_cookies([{
+                "name": COOKIE_NAME,
+                "value": cookie_value,
+                "domain": ".platform.agentscope.io",
+                "path": "/"
+            }])
+            log("已手动添加 qwenpaw_console_token 到浏览器上下文")
         page = context.new_page()
         log("🌐 访问平台...")
         page.goto("https://platform.agentscope.io/", wait_until="domcontentloaded")
         time.sleep(3)
 
-        # 检查登录状态
         login_btn = page.locator("button:has-text('登录')")
         if login_btn.count() and login_btn.is_visible():
             log("⚠️ 检测到登录按钮，尝试刷新 token...")
-            # 优先从 page 的 localStorage 获取 refreshToken
             refresh = page.evaluate("() => localStorage.getItem('refreshToken')")
             if not refresh:
-                # 如果页面中没有，尝试从 state 中获取（可能加载时未正确写入）
-                refresh = get_local_storage_item(state, "refreshToken")
-                if refresh:
-                    log("从 state 中提取到 refreshToken，尝试写入页面...")
-                    page.evaluate(f"window.localStorage.setItem('refreshToken', '{refresh}')")
-                    # 重新加载页面
-                    page.reload()
-                    time.sleep(2)
-                    refresh = page.evaluate("() => localStorage.getItem('refreshToken')")
+                # 尝试从 state 提取
+                for origin in state.get("origins", []):
+                    for item in origin.get("localStorage", []):
+                        if item.get("name") == "refreshToken":
+                            refresh = item.get("value")
+                            if refresh:
+                                page.evaluate(f"window.localStorage.setItem('refreshToken', '{refresh}')")
+                                break
+                    if refresh:
+                        break
             if not refresh:
-                raise Exception("本地没有 refreshToken，请重新导出状态（确保登录后等待几秒再导出）")
+                raise Exception("无法获取 refreshToken，请重新导出状态")
             if not cookie_value:
-                raise Exception("没有 qwenpaw_console_token，请重新导出状态")
+                raise Exception("缺少 qwenpaw_console_token，请设置环境变量 QWENPAW_COOKIE_VALUE")
 
             try:
                 new_token, expires = refresh_token(refresh, cookie_value)
