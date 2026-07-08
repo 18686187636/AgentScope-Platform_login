@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-修复登录检测等待问题，点击后等待足够时间
+用户名/密码登录，以“一键配置QwenPaw”按钮出现作为登录成功标志
+增加详细日志和截图，便于调试
 """
 import os
 import sys
@@ -31,35 +32,15 @@ def send_tg(msg):
         except Exception as e:
             log(f"Telegram 发送失败: {e}")
 
-def wait_for_login_success(page, timeout=30000):
-    """轮询检测登录成功信号，最长等待 timeout 毫秒"""
-    start = time.time()
-    while (time.time() - start) * 1000 < timeout:
-        # 检查URL是否跳离 /login
-        if "/login" not in page.url:
-            log("✅ 检测到 URL 跳转")
-            return True
-        # 检查是否有退出按钮
-        if page.locator("button:has-text('退出'), a:has-text('退出')").count():
-            log("✅ 检测到退出按钮")
-            return True
-        # 检查是否有错误信息
-        if page.locator(".error, .alert, .message:has-text('错误')").count():
-            err = page.locator(".error, .alert, .message:has-text('错误')").text_content()
-            log(f"❌ 登录页面出现错误: {err}")
-            return False
-        time.sleep(2)  # 每2秒检查一次
-    return False
-
 def screenshot(page, name):
     try:
         page.screenshot(path=f"{name}.png")
         log(f"📸 截图: {name}.png")
-    except:
-        pass
+    except Exception as e:
+        log(f"截图失败 {name}: {e}")
 
 def run():
-    log("启动 Agentscope 自动登录（修复等待）")
+    log("启动 Agentscope 自动登录（等待目标按钮出现）")
     if not USERNAME or not PASSWORD:
         log("❌ 请设置 AGENTSCOPE_USERNAME 和 AGENTSCOPE_PASSWORD")
         sys.exit(1)
@@ -74,73 +55,58 @@ def run():
             page.goto(LOGIN_URL, wait_until="domcontentloaded")
             page.wait_for_load_state("networkidle", timeout=10000)
             time.sleep(2)
+            screenshot(page, "01_login_page")
 
+            # 如果已经登录（URL 不在 /login）
             if "/login" not in page.url:
                 log("✅ 似乎已登录，跳过登录流程")
             else:
                 log("📝 填写登录表单...")
                 username_input = page.wait_for_selector("#account", timeout=10000)
-                if username_input:
-                    username_input.fill(USERNAME)
-                    log("✅ 已填写邮箱")
-                else:
-                    raise RuntimeError("未找到 #account")
+                username_input.fill(USERNAME)
+                log("✅ 已填写邮箱")
+                screenshot(page, "02_username_filled")
 
                 password_input = page.wait_for_selector("#password", timeout=10000)
-                if password_input:
-                    password_input.fill(PASSWORD)
-                    log("✅ 已填写密码")
-                else:
-                    raise RuntimeError("未找到 #password")
+                password_input.fill(PASSWORD)
+                log("✅ 已填写密码")
+                screenshot(page, "03_password_filled")
 
-                # 验证码检测
-                if page.locator("input[id*='captcha']").count():
-                    log("⚠️ 检测到验证码")
-                    screenshot(page, "captcha")
-                    raise RuntimeError("验证码出现")
-
-                submit_btn = page.wait_for_selector("button:has-text('登录'), button[type='submit']", timeout=10000)
-                if submit_btn:
-                    submit_btn.click()
-                    log("⏳ 已点击登录按钮，等待登录成功...")
-                else:
-                    raise RuntimeError("未找到登录按钮")
-
-                # 等待登录成功
-                success = wait_for_login_success(page, timeout=20000)  # 20秒
-                if not success:
-                    screenshot(page, "login_timeout")
-                    # 打印页面内容摘要
-                    preview = page.content()[:500]
-                    log(f"页面内容预览: {preview}")
-                    raise RuntimeError("登录超时，未能检测到登录成功信号")
-
-                log("✅ 登录成功")
-
-            # 等待页面完全加载
-            page.wait_for_load_state("networkidle", timeout=10000)
-            time.sleep(2)
-            screenshot(page, "after_login")
-
-            # 点击“一键配置QwenPaw”
-            try:
-                deploy_btn = page.wait_for_selector(
-                    f"button:has-text('{BUTTON_DEPLOY}'), a:has-text('{BUTTON_DEPLOY}')",
-                    timeout=5000
+                # 点击登录按钮
+                submit_btn = page.wait_for_selector(
+                    "button:has-text('登录'), button[type='submit']",
+                    timeout=10000
                 )
-                if deploy_btn and deploy_btn.is_visible():
-                    deploy_btn.click()
-                    log(f"✅ 已点击 '{BUTTON_DEPLOY}'")
-                    log("⏳ 等待 3 秒...")
-                    time.sleep(3)
-                else:
-                    log(f"⚠️ 按钮 '{BUTTON_DEPLOY}' 不可见")
-                    screenshot(page, "deploy_not_found")
-            except PlaywrightTimeoutError:
-                log(f"⚠️ 未找到按钮 '{BUTTON_DEPLOY}'")
-                screenshot(page, "deploy_timeout")
+                submit_btn.click()
+                log("⏳ 已点击登录按钮，等待登录成功...")
+                screenshot(page, "04_after_click")
 
-            # 点击“打开QWENPAW”
+                # 等待“一键配置QwenPaw”按钮出现（登录成功的标志）
+                try:
+                    # 尝试等待该按钮，最多等待 30 秒
+                    page.wait_for_selector(
+                        f"button:has-text('{BUTTON_DEPLOY}'), a:has-text('{BUTTON_DEPLOY}')",
+                        timeout=30000
+                    )
+                    log("✅ 检测到 '一键配置QwenPaw' 按钮，登录成功！")
+                    screenshot(page, "05_login_success")
+                except PlaywrightTimeoutError:
+                    # 超时：登录可能失败，检查错误信息
+                    screenshot(page, "06_login_timeout")
+                    # 检查是否有错误提示
+                    error = page.locator(".error, .alert, .message:has-text('错误'), .message:has-text('失败')")
+                    if error.count():
+                        err_text = error.text_content()
+                        log(f"❌ 登录失败: {err_text}")
+                        raise RuntimeError(f"登录失败: {err_text}")
+                    else:
+                        # 没有错误提示，但按钮未出现，可能是页面未加载完成
+                        html_preview = page.content()[:500]
+                        log(f"页面内容预览: {html_preview}")
+                        raise RuntimeError("登录超时：未检测到 '一键配置QwenPaw' 按钮，可能账号密码错误或页面异常")
+
+            # 登录成功后，点击第二个按钮“打开QWENPAW”
+            log("🔍 查找 '打开QWENPAW'...")
             try:
                 qwen_btn = page.wait_for_selector(
                     f"button:has-text('{BUTTON_QWENPAW}'), a:has-text('{BUTTON_QWENPAW}')",
@@ -151,12 +117,13 @@ def run():
                     log(f"✅ 已点击 '{BUTTON_QWENPAW}'")
                     log("⏳ 等待 5 秒...")
                     time.sleep(5)
+                    screenshot(page, "07_qwen_clicked")
                 else:
                     log(f"⚠️ 按钮 '{BUTTON_QWENPAW}' 不可见")
-                    screenshot(page, "qwen_not_found")
+                    screenshot(page, "07_qwen_not_found")
             except PlaywrightTimeoutError:
                 log(f"⚠️ 未找到按钮 '{BUTTON_QWENPAW}'")
-                screenshot(page, "qwen_timeout")
+                screenshot(page, "07_qwen_not_found")
 
             log("🎉 脚本执行完毕")
             send_tg("✅ Agentscope 自动操作成功")
@@ -164,7 +131,7 @@ def run():
         except Exception as e:
             log(f"❌ 异常: {e}")
             screenshot(page, "error")
-            send_tg(f"❌ 脚本失败: {e}")
+            send_tg(f"❌ Agentscope 脚本失败\n错误: {e}")
             raise
         finally:
             browser.close()
