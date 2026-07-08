@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-多账号脚本，支持逗号分隔的按钮文本列表，并生成详细 Telegram 报告
+多账号脚本，并生成详细 Telegram 报告
 """
 import os
 import sys
