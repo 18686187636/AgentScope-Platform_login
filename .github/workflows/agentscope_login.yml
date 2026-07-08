@@ -23,7 +23,7 @@ jobs:
         env:
           ACCOUNTS_JSON: ${{ secrets.ACCOUNTS_JSON }}
           HEADLESS: 'true'
-          BUTTON_DEPLOY: '一键部署 QwenPaw,Deploy QwenPaw'   # 明确指定，或者使用脚本默认值
+          BUTTON_DEPLOY: '一键部署 QwenPaw,一键部署QwenPaw'
           BUTTON_QWENPAW: '打开QWENPAW,打开 QWENPAW,Open QWENPAW'
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
