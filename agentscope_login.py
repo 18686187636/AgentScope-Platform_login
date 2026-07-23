@@ -3,10 +3,9 @@
 多账号脚本 - 自适应中英文按钮，生成详细 Telegram 报告（北京时间）
 改进说明：
 1. 按钮匹配改为关键词部分匹配（不区分大小写），自动适配中英文
-2. 增加对登录提交按钮的显式点击，提高登录成功率
-3. 增加更智能的等待策略（等待特定元素变化，而非固定 sleep）
-4. 支持环境变量 BUTTON_DEPLOY 和 BUTTON_QWENPAW 作为关键词列表（逗号分隔）
-5. 默认关键词已包含中英文，无需额外配置
+2. 环境变量与默认关键词合并，确保即使只设置中文也能匹配英文
+3. 登录提交增加显式点击，提高成功率
+4. 更智能的等待策略（等待特定元素变化）
 """
 
 import os
@@ -24,12 +23,24 @@ HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TG_CHAT_ID", "")
 
-# 读取环境变量作为关键词列表，若未设置则使用默认（中英文混合）
-DEPLOY_RAW = os.getenv("BUTTON_DEPLOY", "Deploy QwenPaw,一键部署 QwenPaw,部署,Deploy")
-DEPLOY_KEYWORDS = [t.strip() for t in DEPLOY_RAW.split(',') if t.strip()]
+# ---------- 关键词定义（默认包含中英文） ----------
+DEFAULT_DEPLOY_KEYWORDS = ["Deploy QwenPaw", "一键部署 QwenPaw", "部署", "Deploy"]
+DEFAULT_QWEN_KEYWORDS = ["Open QWENPAW", "打开 QWENPAW", "QwenPaw"]
 
-QWEN_RAW = os.getenv("BUTTON_QWENPAW", "Open QWENPAW,打开 QWENPAW,QwenPaw")
-QWEN_KEYWORDS = [t.strip() for t in QWEN_RAW.split(',') if t.strip()]
+# 读取环境变量，并与默认关键词合并（去重，保持顺序）
+env_deploy = os.getenv("BUTTON_DEPLOY", "")
+if env_deploy:
+    deploy_list = [t.strip() for t in env_deploy.split(',') if t.strip()]
+    DEPLOY_KEYWORDS = list(dict.fromkeys(deploy_list + DEFAULT_DEPLOY_KEYWORDS))
+else:
+    DEPLOY_KEYWORDS = DEFAULT_DEPLOY_KEYWORDS
+
+env_qwen = os.getenv("BUTTON_QWENPAW", "")
+if env_qwen:
+    qwen_list = [t.strip() for t in env_qwen.split(',') if t.strip()]
+    QWEN_KEYWORDS = list(dict.fromkeys(qwen_list + DEFAULT_QWEN_KEYWORDS))
+else:
+    QWEN_KEYWORDS = DEFAULT_QWEN_KEYWORDS
 
 LOGIN_URL = "https://platform.agentscope.io/login"
 
@@ -37,7 +48,6 @@ def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
 
 def send_tg(msg):
-    """发送 Telegram 消息（纯文本）"""
     if TG_TOKEN and TG_CHAT:
         try:
             requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
@@ -53,9 +63,6 @@ def screenshot(page, name):
         log(f"截图失败 {name}: {e}")
 
 def wait_for_token(page, timeout=60000):
-    """
-    等待 localStorage 中出现 accessToken，同时检测可能的错误信息
-    """
     try:
         page.wait_for_function(
             "() => localStorage.getItem('accessToken') !== null",
@@ -63,7 +70,6 @@ def wait_for_token(page, timeout=60000):
         )
         return True
     except PlaywrightTimeoutError:
-        # 检查是否有错误提示
         error_elem = page.locator(".error, .alert, .message:has-text('错误'), .message:has-text('Error')")
         if error_elem.count():
             err_text = error_elem.first.text_content()
@@ -71,21 +77,9 @@ def wait_for_token(page, timeout=60000):
         return False
 
 def click_button_by_keywords(page, keywords, timeout_per_attempt=10000, total_timeout=60000):
-    """
-    根据关键词列表（部分匹配，不区分大小写）点击按钮。
-    支持 button, a[role='button'], [role='button'] 等元素。
-    返回 True 表示成功点击，False 表示超时或未找到。
-    """
+    """根据关键词部分匹配（不区分大小写）点击按钮"""
     start_time = time.time()
-    # 收集所有候选元素（按钮、链接等）
-    selectors = [
-        "button",
-        "a[role='button']",
-        "[role='button']",
-        "input[type='submit']",
-        "input[type='button']"
-    ]
-    # 先打印页面上所有可见的按钮文本，方便调试
+    # 先打印所有按钮文本（调试用）
     all_buttons = page.locator("button, a[role='button'], [role='button']")
     count = all_buttons.count()
     if count > 0:
@@ -98,34 +92,36 @@ def click_button_by_keywords(page, keywords, timeout_per_attempt=10000, total_ti
             except:
                 pass
 
-    # 不断尝试匹配（因为页面可能动态加载）
+    selectors = [
+        "button",
+        "a[role='button']",
+        "[role='button']",
+        "input[type='submit']",
+        "input[type='button']"
+    ]
+
     while (time.time() - start_time) * 1000 < total_timeout:
-        # 重新获取元素（避免 stale）
         elements = []
         for sel in selectors:
             elements.extend(page.query_selector_all(sel))
-        # 去重（使用元素句柄）
+        # 去重
         unique = {}
         for el in elements:
-            # 使用元素的内部引用作为 key（避免重复）
             try:
                 ref = el._get_pointer()
                 if ref not in unique:
                     unique[ref] = el
             except:
                 pass
-        # 遍历每个元素检查文本
         for el in unique.values():
             try:
                 text = el.text_content().strip()
                 if not text:
                     continue
-                # 检查是否包含任意关键词（忽略大小写）
                 text_lower = text.lower()
                 for kw in keywords:
                     if kw.lower() in text_lower:
                         log(f"✅ 找到包含关键词 '{kw}' 的按钮：'{text}'")
-                        # 确保元素可见且可交互
                         if el.is_visible() and el.is_enabled():
                             el.scroll_into_view_if_needed()
                             time.sleep(0.5)
@@ -133,20 +129,16 @@ def click_button_by_keywords(page, keywords, timeout_per_attempt=10000, total_ti
                                 el.click()
                                 log("✅ 常规点击成功")
                                 return True
-                            except Exception as e:
-                                log(f"常规点击失败，尝试 JavaScript 点击: {e}")
+                            except:
                                 page.evaluate("(e) => e.click()", el)
                                 log("✅ JavaScript 点击成功")
                                 return True
                         else:
-                            log(f"元素不可见或不可交互，尝试强制点击")
                             page.evaluate("(e) => e.click()", el)
                             log("✅ JavaScript 强制点击成功")
                             return True
-            except Exception as e:
-                # 单个元素处理异常，继续下一个
+            except:
                 continue
-        # 未找到，等待并重试
         time.sleep(1)
     log(f"❌ 在 {total_timeout}ms 内未找到包含任何关键词的按钮：{keywords}")
     return False
@@ -164,7 +156,6 @@ def process_account(username, password, account_index):
             time.sleep(2)
             screenshot(page, f"01_login_{account_index}")
 
-            # 检查是否已有 token
             token = page.evaluate("() => localStorage.getItem('accessToken')")
             if token:
                 log(f"账号 {account_index} 已检测到 accessToken，跳过登录")
@@ -180,22 +171,18 @@ def process_account(username, password, account_index):
                 log("✅ 已填写密码")
                 screenshot(page, f"03_password_{account_index}")
 
-                # 先尝试按 Enter
                 log("⏳ 按 Enter 键提交登录...")
                 password_input.press("Enter")
                 screenshot(page, f"04_after_enter_{account_index}")
 
                 log("⏳ 等待 accessToken 出现...")
-                success = wait_for_token(page, timeout=30000)  # 先等待30秒
+                success = wait_for_token(page, timeout=30000)
                 if not success:
-                    # 如果 Enter 无效，尝试点击登录按钮
                     log("按 Enter 未触发登录，尝试点击登录按钮...")
                     login_btn = page.locator("button:has-text('登录'), button[type='submit'], button:has-text('Sign In'), button:has-text('Login')")
                     if login_btn.count():
                         login_btn.first.click()
                         success = wait_for_token(page, timeout=30000)
-                    else:
-                        log("未找到登录按钮")
                 if not success:
                     screenshot(page, f"05_login_failed_{account_index}")
                     raise RuntimeError(f"账号 {account_index} 登录失败")
@@ -213,33 +200,24 @@ def process_account(username, password, account_index):
                 raise RuntimeError(f"账号 {account_index} 无法点击部署按钮")
             screenshot(page, f"07_deploy_clicked_{account_index}")
 
-            # 等待部署操作完成（判断条件：页面出现某些变化）
             log("⏳ 等待部署操作完成...")
-            try:
-                # 等待某个成功提示或 URL 变化，这里等待 15 秒确保稳定
-                page.wait_for_timeout(15000)
-                # 也可以等待网络空闲
-                page.wait_for_load_state("networkidle", timeout=10000)
-            except:
-                pass
+            page.wait_for_timeout(15000)
+            page.wait_for_load_state("networkidle", timeout=10000)
 
             # 2. 点击打开 QwenPaw 按钮
             log(f"🔍 尝试点击 QwenPaw 按钮，关键词列表：{QWEN_KEYWORDS}")
-            # 注意：点击后可能打开新窗口或标签页，需要处理
             with context.expect_page() as new_page_info:
                 if not click_button_by_keywords(page, QWEN_KEYWORDS, total_timeout=60000):
                     screenshot(page, f"08_qwen_failed_{account_index}")
                     raise RuntimeError(f"账号 {account_index} 无法点击 QwenPaw 按钮")
-                # 如果有新页面，等待它加载
                 try:
                     new_page = new_page_info.value
                     new_page.wait_for_load_state("networkidle", timeout=10000)
                     log("✅ 新页面（QwenPaw）已加载")
                     screenshot(new_page, f"09_qwen_newpage_{account_index}")
                     new_page.close()
-                except Exception as e:
-                    # 如果没有新页面，可能是在当前页面打开
-                    log(f"未检测到新页面（可能在当前页面打开），等待页面加载...")
+                except:
+                    log("未检测到新页面，可能在当前页面打开，等待页面加载...")
                     page.wait_for_load_state("networkidle", timeout=10000)
                     screenshot(page, f"09_qwen_currentpage_{account_index}")
 
@@ -268,7 +246,6 @@ def run():
             sys.exit(1)
         accounts = [{"username": username, "password": password}]
 
-    # 收集每个账号的处理结果
     account_results = []
     for idx, cred in enumerate(accounts, start=1):
         username = cred.get("username")
@@ -291,15 +268,13 @@ def run():
             "status": status_text,
             "success": success
         })
-        time.sleep(2)  # 账号之间间隔
+        time.sleep(2)
 
-    # 统计
     total = len(account_results)
     success_count = sum(1 for r in account_results if r["success"])
     fail_count = total - success_count
     success_rate = (success_count / total * 100) if total > 0 else 0
 
-    # 构建 Telegram 消息
     lines = []
     lines.append("📨 Agentscope 多账号任务报告")
     lines.append("")
