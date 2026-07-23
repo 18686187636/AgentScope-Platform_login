@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 """
 多账号脚本 - 自适应中英文按钮，生成详细 Telegram 报告（北京时间）
-改进说明：
-1. 按钮匹配改为关键词部分匹配（不区分大小写），自动适配中英文
-2. 环境变量与默认关键词合并，确保即使只设置中文也能匹配英文
-3. 登录提交增加显式点击，提高成功率
-4. 更智能的等待策略（等待特定元素变化）
+修复：移除有问题的去重逻辑，直接遍历所有按钮元素
 """
 
 import os
@@ -16,18 +12,18 @@ import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from datetime import datetime, timezone, timedelta
 
-# ---------- 时区设置 ----------
+# ---------- 时区 ----------
 BEIJING_TZ = timezone(timedelta(hours=8))
 
 HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TG_CHAT_ID", "")
 
-# ---------- 关键词定义（默认包含中英文） ----------
+# ---------- 默认关键词（含中英文） ----------
 DEFAULT_DEPLOY_KEYWORDS = ["Deploy QwenPaw", "一键部署 QwenPaw", "部署", "Deploy"]
 DEFAULT_QWEN_KEYWORDS = ["Open QWENPAW", "打开 QWENPAW", "QwenPaw"]
 
-# 读取环境变量，并与默认关键词合并（去重，保持顺序）
+# 合并环境变量与默认关键词（去重且保持顺序）
 env_deploy = os.getenv("BUTTON_DEPLOY", "")
 if env_deploy:
     deploy_list = [t.strip() for t in env_deploy.split(',') if t.strip()]
@@ -76,10 +72,13 @@ def wait_for_token(page, timeout=60000):
             log(f"❌ 登录失败: {err_text}")
         return False
 
-def click_button_by_keywords(page, keywords, timeout_per_attempt=10000, total_timeout=60000):
-    """根据关键词部分匹配（不区分大小写）点击按钮"""
+def click_button_by_keywords(page, keywords, total_timeout=60000):
+    """
+    根据关键词部分匹配（不区分大小写）点击按钮。
+    直接遍历所有候选元素，不进行去重（避免内部 API 问题）。
+    """
     start_time = time.time()
-    # 先打印所有按钮文本（调试用）
+    # 打印页面上所有按钮文本（用于调试）
     all_buttons = page.locator("button, a[role='button'], [role='button']")
     count = all_buttons.count()
     if count > 0:
@@ -101,45 +100,44 @@ def click_button_by_keywords(page, keywords, timeout_per_attempt=10000, total_ti
     ]
 
     while (time.time() - start_time) * 1000 < total_timeout:
-        elements = []
+        # 重新获取元素，应对动态加载
         for sel in selectors:
-            elements.extend(page.query_selector_all(sel))
-        # 去重
-        unique = {}
-        for el in elements:
-            try:
-                ref = el._get_pointer()
-                if ref not in unique:
-                    unique[ref] = el
-            except:
-                pass
-        for el in unique.values():
-            try:
-                text = el.text_content().strip()
-                if not text:
-                    continue
-                text_lower = text.lower()
-                for kw in keywords:
-                    if kw.lower() in text_lower:
-                        log(f"✅ 找到包含关键词 '{kw}' 的按钮：'{text}'")
-                        if el.is_visible() and el.is_enabled():
+            elements = page.query_selector_all(sel)
+            for el in elements:
+                try:
+                    text = el.text_content().strip()
+                    if not text:
+                        continue
+                    text_lower = text.lower()
+                    # 检查是否包含任意关键词
+                    for kw in keywords:
+                        if kw.lower() in text_lower:
+                            log(f"✅ 找到包含关键词 '{kw}' 的按钮：'{text}'")
+                            # 滚动到可视区域
                             el.scroll_into_view_if_needed()
                             time.sleep(0.5)
-                            try:
-                                el.click()
-                                log("✅ 常规点击成功")
-                                return True
-                            except:
+                            # 优先常规点击，失败则用 JavaScript 强制点击
+                            if el.is_visible() and el.is_enabled():
+                                try:
+                                    el.click()
+                                    log("✅ 常规点击成功")
+                                    return True
+                                except Exception as e:
+                                    log(f"常规点击失败 ({e})，尝试 JavaScript 点击")
+                                    page.evaluate("(e) => e.click()", el)
+                                    log("✅ JavaScript 点击成功")
+                                    return True
+                            else:
+                                log("元素不可见或不可交互，使用 JavaScript 强制点击")
                                 page.evaluate("(e) => e.click()", el)
-                                log("✅ JavaScript 点击成功")
+                                log("✅ JavaScript 强制点击成功")
                                 return True
-                        else:
-                            page.evaluate("(e) => e.click()", el)
-                            log("✅ JavaScript 强制点击成功")
-                            return True
-            except:
-                continue
+                except Exception as e:
+                    # 单个元素处理失败，继续下一个
+                    continue
+        # 一轮未找到，短暂等待后重试
         time.sleep(1)
+
     log(f"❌ 在 {total_timeout}ms 内未找到包含任何关键词的按钮：{keywords}")
     return False
 
@@ -193,7 +191,7 @@ def process_account(username, password, account_index):
             page.wait_for_load_state("networkidle", timeout=10000)
             time.sleep(3)
 
-            # 1. 点击部署按钮
+            # ---------- 1. 点击部署按钮 ----------
             log(f"🔍 尝试点击部署按钮，关键词列表：{DEPLOY_KEYWORDS}")
             if not click_button_by_keywords(page, DEPLOY_KEYWORDS, total_timeout=60000):
                 screenshot(page, f"07_deploy_failed_{account_index}")
@@ -201,11 +199,13 @@ def process_account(username, password, account_index):
             screenshot(page, f"07_deploy_clicked_{account_index}")
 
             log("⏳ 等待部署操作完成...")
+            # 等待 15 秒确保部署启动
             page.wait_for_timeout(15000)
             page.wait_for_load_state("networkidle", timeout=10000)
 
-            # 2. 点击打开 QwenPaw 按钮
+            # ---------- 2. 点击打开 QwenPaw 按钮 ----------
             log(f"🔍 尝试点击 QwenPaw 按钮，关键词列表：{QWEN_KEYWORDS}")
+            # 处理可能的新窗口
             with context.expect_page() as new_page_info:
                 if not click_button_by_keywords(page, QWEN_KEYWORDS, total_timeout=60000):
                     screenshot(page, f"08_qwen_failed_{account_index}")
@@ -217,7 +217,7 @@ def process_account(username, password, account_index):
                     screenshot(new_page, f"09_qwen_newpage_{account_index}")
                     new_page.close()
                 except:
-                    log("未检测到新页面，可能在当前页面打开，等待页面加载...")
+                    log("未检测到新页面，可能在当前页面打开，等待加载...")
                     page.wait_for_load_state("networkidle", timeout=10000)
                     screenshot(page, f"09_qwen_currentpage_{account_index}")
 
