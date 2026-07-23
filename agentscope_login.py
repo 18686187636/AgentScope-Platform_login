@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 多账号脚本 - 自适应中英文按钮，生成详细 Telegram 报告（北京时间）
-修复：移除有问题的去重逻辑，直接遍历所有按钮元素
+修复：移除宽泛关键词 'QwenPaw'，仅保留精确的 'Open QWENPAW' 和中文对应项
 """
 
 import os
@@ -19,9 +19,9 @@ HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TG_CHAT_ID", "")
 
-# ---------- 默认关键词（含中英文） ----------
+# ---------- 默认关键词（精确匹配，不含宽泛词） ----------
 DEFAULT_DEPLOY_KEYWORDS = ["Deploy QwenPaw", "一键部署 QwenPaw", "部署", "Deploy"]
-DEFAULT_QWEN_KEYWORDS = ["Open QWENPAW", "打开 QWENPAW", "QwenPaw"]
+DEFAULT_QWEN_KEYWORDS = ["Open QWENPAW", "打开 QWENPAW", "打开QWENPAW"]   # 移除了 "QwenPaw"
 
 # 合并环境变量与默认关键词（去重且保持顺序）
 env_deploy = os.getenv("BUTTON_DEPLOY", "")
@@ -75,7 +75,7 @@ def wait_for_token(page, timeout=60000):
 def click_button_by_keywords(page, keywords, total_timeout=60000):
     """
     根据关键词部分匹配（不区分大小写）点击按钮。
-    直接遍历所有候选元素，不进行去重（避免内部 API 问题）。
+    直接遍历所有候选元素，不进行去重。
     """
     start_time = time.time()
     # 打印页面上所有按钮文本（用于调试）
@@ -100,7 +100,6 @@ def click_button_by_keywords(page, keywords, total_timeout=60000):
     ]
 
     while (time.time() - start_time) * 1000 < total_timeout:
-        # 重新获取元素，应对动态加载
         for sel in selectors:
             elements = page.query_selector_all(sel)
             for el in elements:
@@ -109,14 +108,11 @@ def click_button_by_keywords(page, keywords, total_timeout=60000):
                     if not text:
                         continue
                     text_lower = text.lower()
-                    # 检查是否包含任意关键词
                     for kw in keywords:
                         if kw.lower() in text_lower:
                             log(f"✅ 找到包含关键词 '{kw}' 的按钮：'{text}'")
-                            # 滚动到可视区域
                             el.scroll_into_view_if_needed()
                             time.sleep(0.5)
-                            # 优先常规点击，失败则用 JavaScript 强制点击
                             if el.is_visible() and el.is_enabled():
                                 try:
                                     el.click()
@@ -132,10 +128,8 @@ def click_button_by_keywords(page, keywords, total_timeout=60000):
                                 page.evaluate("(e) => e.click()", el)
                                 log("✅ JavaScript 强制点击成功")
                                 return True
-                except Exception as e:
-                    # 单个元素处理失败，继续下一个
+                except Exception:
                     continue
-        # 一轮未找到，短暂等待后重试
         time.sleep(1)
 
     log(f"❌ 在 {total_timeout}ms 内未找到包含任何关键词的按钮：{keywords}")
@@ -199,7 +193,6 @@ def process_account(username, password, account_index):
             screenshot(page, f"07_deploy_clicked_{account_index}")
 
             log("⏳ 等待部署操作完成...")
-            # 等待 15 秒确保部署启动
             page.wait_for_timeout(15000)
             page.wait_for_load_state("networkidle", timeout=10000)
 
