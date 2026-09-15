@@ -40,7 +40,7 @@ AgentScope Platform每3h检查状态,进行保活
 TG_BOT_TOKEN: 1234567890:ABCdefGHIjklMNOpqrsTUVwxyz  #可选
 
 TG_CHAT_ID: 123456789  #可选
-
+ 
 注意,多账号处理:
  
    ACCOUNTS_JSON
