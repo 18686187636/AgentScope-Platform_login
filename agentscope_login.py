@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""
-多账号脚本 - 自适应中英文按钮，生成详细 Telegram 报告（北京时间）
-修复：移除宽泛关键词 'QwenPaw'，仅保留精确的 'Open QWENPAW' 和中文对应项
-"""
+
 
 import os
 import sys
@@ -23,6 +20,13 @@ TG_CHAT = os.getenv("TG_CHAT_ID", "")
 DEFAULT_DEPLOY_KEYWORDS = ["Deploy QwenPaw", "一键部署 QwenPaw", "部署", "Deploy"]
 DEFAULT_QWEN_KEYWORDS = ["Open QWENPAW", "打开 QWENPAW", "打开QWENPAW"]   # 移除了 "QwenPaw"
 
+# ---------- 弹窗通知关键词（登录后弹出，需要点掉才能继续） ----------
+DEFAULT_NOTIFICATION_KEYWORDS = [
+    "Got it", "Got It",
+    "知道了", "我知道了", "明白", "了解",
+    "关闭", "Close",
+]
+
 # 合并环境变量与默认关键词（去重且保持顺序）
 env_deploy = os.getenv("BUTTON_DEPLOY", "")
 if env_deploy:
@@ -38,10 +42,19 @@ if env_qwen:
 else:
     QWEN_KEYWORDS = DEFAULT_QWEN_KEYWORDS
 
+env_notify = os.getenv("BUTTON_NOTIFICATION", "")
+if env_notify:
+    notify_list = [t.strip() for t in env_notify.split(',') if t.strip()]
+    NOTIFICATION_KEYWORDS = list(dict.fromkeys(notify_list + DEFAULT_NOTIFICATION_KEYWORDS))
+else:
+    NOTIFICATION_KEYWORDS = DEFAULT_NOTIFICATION_KEYWORDS
+
 LOGIN_URL = "https://platform.agentscope.io/login"
+
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
+
 
 def send_tg(msg):
     if TG_TOKEN and TG_CHAT:
@@ -51,12 +64,14 @@ def send_tg(msg):
         except Exception as e:
             log(f"Telegram 发送失败: {e}")
 
+
 def screenshot(page, name):
     try:
         page.screenshot(path=f"{name}.png")
         log(f"📸 截图: {name}.png")
     except Exception as e:
         log(f"截图失败 {name}: {e}")
+
 
 def wait_for_token(page, timeout=60000):
     try:
@@ -71,6 +86,77 @@ def wait_for_token(page, timeout=60000):
             err_text = error_elem.first.text_content()
             log(f"❌ 登录失败: {err_text}")
         return False
+
+
+# ---------- 通用：找到第一个可见且文本命中关键词的元素并点击 ----------
+def _click_first_visible(page, keywords):
+    """
+    遍历页面上的可交互元素，点击第一个可见且文本包含任一关键词的元素。
+    返回被点击元素的文本；未找到返回 None。
+    """
+    selectors = [
+        "button",
+        "[role='button']",
+        "a[role='button']",
+        "input[type='submit']",
+        "input[type='button']",
+    ]
+    for sel in selectors:
+        try:
+            elements = page.query_selector_all(sel)
+        except Exception:
+            continue
+        for el in elements:
+            try:
+                if not el.is_visible():
+                    continue
+                text = (el.text_content() or "").strip()
+                if not text:
+                    text = (el.get_attribute("value") or "").strip()
+                if not text:
+                    continue
+                text_lower = text.lower()
+                for kw in keywords:
+                    if kw.lower() in text_lower:
+                        try:
+                            el.scroll_into_view_if_needed(timeout=1000)
+                        except Exception:
+                            pass
+                        try:
+                            el.click(timeout=3000)
+                        except Exception:
+                            page.evaluate("(e) => e.click()", el)
+                        return text
+            except Exception:
+                continue
+    return None
+
+
+def dismiss_popups(page, keywords=None, max_clicks=20, interval=1.0, label="弹窗通知"):
+    """
+    反复点击匹配关键词的按钮，直到页面上再也找不到为止。
+    用于关闭登录后弹出的通知/公告弹窗（例如 "Got it"）。
+    设置 max_clicks 上限以避免死循环。
+    """
+    if keywords is None:
+        keywords = NOTIFICATION_KEYWORDS
+
+    clicked_texts = []
+    for i in range(max_clicks):
+        hit = _click_first_visible(page, keywords)
+        if not hit:
+            break
+        clicked_texts.append(hit)
+        log(f"🔔 关闭{label}（第 {len(clicked_texts)} 次）: '{hit}'")
+        time.sleep(interval)
+
+    if clicked_texts:
+        log(f"✅ 共关闭 {len(clicked_texts)} 个{label}按钮，继续后续操作")
+        time.sleep(1)  # 等待弹窗动画完全结束
+    else:
+        log(f"ℹ️ 未发现{label}按钮，跳过")
+    return len(clicked_texts)
+
 
 def click_button_by_keywords(page, keywords, total_timeout=60000):
     """
@@ -135,6 +221,7 @@ def click_button_by_keywords(page, keywords, total_timeout=60000):
     log(f"❌ 在 {total_timeout}ms 内未找到包含任何关键词的按钮：{keywords}")
     return False
 
+
 def process_account(username, password, account_index):
     log(f"--- 开始处理账号 {account_index}: {username} ---")
     with sync_playwright() as p:
@@ -185,6 +272,11 @@ def process_account(username, password, account_index):
             page.wait_for_load_state("networkidle", timeout=10000)
             time.sleep(3)
 
+            # ---------- 0. 关闭登录后弹出的通知弹窗（如 "Got it"），直到按钮消失 ----------
+            log(f"🔔 检查弹窗通知，关键词列表：{NOTIFICATION_KEYWORDS}")
+            dismiss_popups(page, NOTIFICATION_KEYWORDS, max_clicks=20, interval=1.0)
+            screenshot(page, f"06b_after_dismiss_{account_index}")
+
             # ---------- 1. 点击部署按钮 ----------
             log(f"🔍 尝试点击部署按钮，关键词列表：{DEPLOY_KEYWORDS}")
             if not click_button_by_keywords(page, DEPLOY_KEYWORDS, total_timeout=60000):
@@ -222,6 +314,7 @@ def process_account(username, password, account_index):
             screenshot(page, f"error_{account_index}")
             browser.close()
             return False
+
 
 def run():
     accounts_json = os.getenv("ACCOUNTS_JSON", "")
@@ -291,6 +384,7 @@ def run():
         sys.exit(1)
     else:
         sys.exit(0)
+
 
 if __name__ == "__main__":
     try:
