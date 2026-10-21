@@ -1,9 +1,7 @@
 name: Agentscope Auto Login
 
 on:
-  schedule:
-    - cron: '*/20 * * * *'
-  workflow_dispatch:
+  workflow_dispatch:   # 由 cron-job.org 通过 GitHub API 触发
 
 permissions:
   actions: write
@@ -34,6 +32,7 @@ jobs:
 
       - name: Run script
         env:
+          # ---- 原有 ----
           ACCOUNTS_JSON: ${{ secrets.ACCOUNTS_JSON }}
           AGENTSCOPE_USERNAME: ${{ secrets.AGENTSCOPE_USERNAME }}
           AGENTSCOPE_PASSWORD: ${{ secrets.AGENTSCOPE_PASSWORD }}
@@ -42,9 +41,15 @@ jobs:
           BUTTON_QWENPAW: '打开QWENPAW,打开 QWENPAW,Open QWENPAW'
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          # ---- cron-job.org 调度（关键，必须映射） ----
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          REPO_OWNER: ${{ secrets.REPO_OWNER }}
+          REPO_NAME: ${{ secrets.REPO_NAME }}
+          WORKFLOW_FILE: ${{ secrets.WORKFLOW_FILE }}
+          BRANCH: ${{ secrets.BRANCH }}
+          CRONJOB_API_KEY: ${{ secrets.CRONJOB_API_KEY }}
         run: python agentscope_login.py
 
-      # 只在失败时上传，避免每天 490MB 撞额度
       - name: Upload screenshots (on failure only)
         if: failure()
         uses: actions/upload-artifact@v4
@@ -54,7 +59,6 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
-      # 只在手动触发时清理，避免每 20 分钟浪费 2 分钟
       - name: Cleanup old runs (manual only)
         if: github.event_name == 'workflow_dispatch'
         uses: Mattraks/delete-workflow-runs@v2
