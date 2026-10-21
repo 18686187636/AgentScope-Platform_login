@@ -1,75 +1,37 @@
 name: Agentscope Auto Login
 
 on:
-  workflow_dispatch:   # 由 cron-job.org 每 20 分钟 POST 触发
-
-permissions:
-  actions: write
-  contents: read
-
-concurrency:
-  group: agentscope-auto
-  cancel-in-progress: false
+  schedule:
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
 
 jobs:
   auto:
     runs-on: ubuntu-latest
-    timeout-minutes: 18
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y fonts-wqy-zenhei fonts-noto-cjk
           pip install playwright requests
-          playwright install --with-deps chromium
-
+          playwright install chromium
       - name: Run script
         env:
-          # ---- 账号 ----
           ACCOUNTS_JSON: ${{ secrets.ACCOUNTS_JSON }}
-          AGENTSCOPE_USERNAME: ${{ secrets.AGENTSCOPE_USERNAME }}
-          AGENTSCOPE_PASSWORD: ${{ secrets.AGENTSCOPE_PASSWORD }}
-          # ---- 行为 ----
           HEADLESS: 'true'
           BUTTON_DEPLOY: '一键部署 QwenPaw,一键部署QwenPaw'
           BUTTON_QWENPAW: '打开QWENPAW,打开 QWENPAW,Open QWENPAW'
-          BUTTON_NOTIFICATION: 'Got it,Got It,知道了,我知道了,关闭,Close'
-          # ---- 通知 ----
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          # ---- cron-job.org 自动调度（必须映射）----
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          REPO_OWNER: ${{ secrets.REPO_OWNER }}
-          REPO_NAME: ${{ secrets.REPO_NAME }}
-          WORKFLOW_FILE: ${{ secrets.WORKFLOW_FILE }}
-          BRANCH: ${{ secrets.BRANCH }}
-          CRONJOB_API_KEY: ${{ secrets.CRONJOB_API_KEY }}
         run: python agentscope_login.py
-
-      - name: Upload screenshots (on failure only)
-        if: failure()
+      - name: Upload screenshots (always)
+        if: always()   # 无论成功失败都上传
         uses: actions/upload-artifact@v4
         with:
-          name: screenshots-${{ github.run_number }}
-          path: '*.png'
-          retention-days: 1
-          if-no-files-found: ignore
-
-      - name: Cleanup old runs (manual only)
-        if: github.event_name == 'workflow_dispatch'
-        uses: Mattraks/delete-workflow-runs@v2
-        with:
-          token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          delete_workflow_pattern: ${{ github.workflow }}
-          retain_days: 3
-          keep_minimum_runs: 72
+          name: debug-screenshots
+          path: |
+            *.png
