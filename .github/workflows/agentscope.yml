@@ -1,7 +1,7 @@
 name: Agentscope Auto Login
 
 on:
-  workflow_dispatch:   # 由 cron-job.org 通过 GitHub API 触发
+  workflow_dispatch:   # 由 cron-job.org 每 20 分钟 POST 触发
 
 permissions:
   actions: write
@@ -17,9 +17,11 @@ jobs:
     timeout-minutes: 18
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
@@ -32,16 +34,19 @@ jobs:
 
       - name: Run script
         env:
-          # ---- 原有 ----
+          # ---- 账号 ----
           ACCOUNTS_JSON: ${{ secrets.ACCOUNTS_JSON }}
           AGENTSCOPE_USERNAME: ${{ secrets.AGENTSCOPE_USERNAME }}
           AGENTSCOPE_PASSWORD: ${{ secrets.AGENTSCOPE_PASSWORD }}
+          # ---- 行为 ----
           HEADLESS: 'true'
           BUTTON_DEPLOY: '一键部署 QwenPaw,一键部署QwenPaw'
           BUTTON_QWENPAW: '打开QWENPAW,打开 QWENPAW,Open QWENPAW'
+          BUTTON_NOTIFICATION: 'Got it,Got It,知道了,我知道了,关闭,Close'
+          # ---- 通知 ----
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          # ---- cron-job.org 调度（关键，必须映射） ----
+          # ---- cron-job.org 自动调度（必须映射）----
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           REPO_OWNER: ${{ secrets.REPO_OWNER }}
           REPO_NAME: ${{ secrets.REPO_NAME }}
