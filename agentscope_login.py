@@ -14,23 +14,18 @@ HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TG_CHAT_ID", "")
 
-# ---------- cron-job.org 调度相关 ----------
-GH_TOKEN = os.getenv("GH_TOKEN", "")
-REPO_OWNER = os.getenv("REPO_OWNER", "")
-REPO_NAME = os.getenv("REPO_NAME", "")
-WORKFLOW_FILE = os.getenv("WORKFLOW_FILE", "agentscope.yml")
-BRANCH = os.getenv("BRANCH", "main")
-CRONJOB_API_KEY = os.getenv("CRONJOB_API_KEY", "")
-
-# ---------- 默认关键词 ----------
+# ---------- 默认关键词（精确匹配，不含宽泛词） ----------
 DEFAULT_DEPLOY_KEYWORDS = ["Deploy QwenPaw", "一键部署 QwenPaw", "部署", "Deploy"]
-DEFAULT_QWEN_KEYWORDS = ["Open QWENPAW", "打开 QWENPAW", "打开QWENPAW"]
+DEFAULT_QWEN_KEYWORDS = ["Open QWENPAW", "打开 QWENPAW", "打开QWENPAW"]   # 移除了 "QwenPaw"
+
+# ---------- 弹窗通知关键词（登录后弹出，需要点掉才能继续） ----------
 DEFAULT_NOTIFICATION_KEYWORDS = [
     "Got it", "Got It",
     "知道了", "我知道了", "明白", "了解",
     "关闭", "Close",
 ]
 
+# 合并环境变量与默认关键词（去重且保持顺序）
 env_deploy = os.getenv("BUTTON_DEPLOY", "")
 if env_deploy:
     deploy_list = [t.strip() for t in env_deploy.split(',') if t.strip()]
@@ -56,219 +51,18 @@ LOGIN_URL = "https://platform.agentscope.io/login"
 
 
 def log(msg):
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
 
 
 def send_tg(msg):
     if TG_TOKEN and TG_CHAT:
         try:
-            requests.post(
-                f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-                json={"chat_id": TG_CHAT, "text": msg},
-                timeout=10,
-            )
+            requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                          json={"chat_id": TG_CHAT, "text": msg}, timeout=10)
         except Exception as e:
             log(f"Telegram 发送失败: {e}")
 
 
-# ================================================================
-# cron-job.org 自动调度
-# ================================================================
-def get_github_workflow_id():
-    """通过 GitHub API 获取 workflow 的数字 ID。"""
-    if not (GH_TOKEN and REPO_OWNER and REPO_NAME and WORKFLOW_FILE):
-        missing = [k for k, v in {
-            "GH_TOKEN": GH_TOKEN,
-            "REPO_OWNER": REPO_OWNER,
-            "REPO_NAME": REPO_NAME,
-            "WORKFLOW_FILE": WORKFLOW_FILE,
-        }.items() if not v]
-        log(f"⚠️ 获取 workflow_id 所需变量缺失: {missing}")
-        return None
-
-    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/actions/workflows"
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {GH_TOKEN}",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    try:
-        resp = requests.get(url, headers=headers, timeout=30)
-        log(f"   GET workflows 响应: {resp.status_code}")
-        resp.raise_for_status()
-        for wf in resp.json().get("workflows", []):
-            wf_path = wf.get("path", "")
-            if (wf_path == WORKFLOW_FILE
-                    or wf_path.endswith("/" + WORKFLOW_FILE)
-                    or os.path.basename(wf_path) == os.path.basename(WORKFLOW_FILE)):
-                log(f"✅ 工作流匹配: {wf_path} (ID: {wf['id']})")
-                return wf["id"]
-        log(f"❌ 未匹配到工作流，期望文件名: {WORKFLOW_FILE}")
-        return None
-    except Exception as e:
-        log(f"❌ 获取 workflow_id 失败: {e}")
-        return None
-
-
-def list_cronjobs():
-    """获取 cron-job.org 下所有任务。"""
-    try:
-        resp = requests.get(
-            "https://api.cron-job.org/jobs",
-            headers={"Authorization": f"Bearer {CRONJOB_API_KEY}"},
-            timeout=30,
-        )
-        log(f"   GET cron-jobs 响应: {resp.status_code}")
-        if resp.status_code == 200:
-            return resp.json().get("jobs", [])
-        log(f"   获取任务列表失败: {resp.text[:200]}")
-        return []
-    except Exception as e:
-        log(f"   获取任务列表异常: {e}")
-        return []
-
-
-def delete_cronjob(job_id):
-    """删除 cron-job.org 指定任务。"""
-    try:
-        resp = requests.delete(
-            f"https://api.cron-job.org/jobs/{job_id}",
-            headers={"Authorization": f"Bearer {CRONJOB_API_KEY}"},
-            timeout=30,
-        )
-        if resp.status_code == 200:
-            log(f"🗑️ 已删除旧任务 {job_id}")
-            return True
-        log(f"   删除任务 {job_id} 失败: HTTP {resp.status_code}")
-        return False
-    except Exception as e:
-        log(f"   删除任务异常: {e}")
-        return False
-
-
-def schedule_cronjob():
-    """
-    创建/更新 cron-job.org 周期任务：每 20 分钟（0/20/40 分）POST dispatches 触发 workflow。
-    - 若已存在相同 URL 的任务：PATCH 更新其 schedule
-    - 若不存在：PUT 新建
-    - expiresAt 每次延长 1 年，实际永不过期
-    """
-    # ---- 1. 检查必需变量 ----
-    required = {
-        "CRONJOB_API_KEY": CRONJOB_API_KEY,
-        "GH_TOKEN": GH_TOKEN,
-        "REPO_OWNER": REPO_OWNER,
-        "REPO_NAME": REPO_NAME,
-    }
-    missing = [k for k, v in required.items() if not v]
-    if missing:
-        log(f"⚠️ 调度所需 secret 不全，缺少: {missing}，跳过 cron-job 设置")
-        return False
-
-    # ---- 2. 获取 workflow 数字 ID ----
-    workflow_id = get_github_workflow_id()
-    if not workflow_id:
-        log("⚠️ 无法获取 workflow id，跳过调度")
-        return False
-
-    # ---- 3. 构造周期调度 ----
-    now_utc = datetime.now(timezone.utc)
-    schedule = {
-        "minutes": [0, 20, 40],   # 每小时 0/20/40 分
-        "hours": [-1],            # 每小时
-        "mdays": [-1],            # 每天
-        "months": [-1],           # 每月
-        "wdays": [-1],            # 每周每天
-        "timezone": "UTC",
-        "expiresAt": (now_utc + timedelta(days=365)).strftime("%Y%m%d%H%M%S"),
-    }
-
-    github_url = (
-        f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}"
-        f"/actions/workflows/{workflow_id}/dispatches"
-    )
-
-    job_payload = {
-        "enabled": True,
-        "url": github_url,
-        "requestMethod": 1,       # 1 = POST
-        "saveResponses": True,
-        "schedule": schedule,
-        "extendedData": {
-            "headers": {
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {GH_TOKEN}",
-                "X-GitHub-Api-Version": "2022-11-28",
-                "Content-Type": "application/json",
-                "User-Agent": "cron-job.org/1.0",
-            },
-            "body": json.dumps({"ref": BRANCH}),
-        },
-    }
-
-    # ---- 4. 打印待发送配置 ----
-    log(f"🔧 即将配置 cron-job:")
-    log(f"   URL        : {github_url}")
-    log(f"   Method     : POST")
-    log(f"   Body       : {json.dumps({'ref': BRANCH})}")
-    log(f"   Minutes    : {schedule['minutes']}")
-    log(f"   expiresAt  : {schedule['expiresAt']}")
-
-    headers = {
-        "Authorization": f"Bearer {CRONJOB_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    # ---- 5. 查找已有任务 ----
-    existing = list_cronjobs()
-    matched = next((j for j in existing if j.get("url") == github_url), None)
-
-    if matched:
-        job_id = matched.get("jobId")
-        log(f"📌 发现已存在任务 ID: {job_id}，尝试更新")
-        try:
-            resp = requests.patch(
-                f"https://api.cron-job.org/jobs/{job_id}",
-                headers=headers,
-                json={"job": job_payload},
-                timeout=30,
-            )
-            log(f"   PATCH 响应: {resp.status_code} {resp.text[:200]}")
-            if resp.status_code == 200:
-                log(f"✅ cron-job 更新成功，周期：每 20 分钟（0/20/40 分）")
-                send_tg(f"🔄 cron-job 已更新，ID: {job_id}，每 20 分钟触发")
-                return True
-            log(f"⚠️ 更新失败，尝试删除后重建")
-            delete_cronjob(job_id)
-        except Exception as e:
-            log(f"⚠️ 更新异常: {e}，尝试删除后重建")
-            delete_cronjob(job_id)
-
-    # ---- 6. 新建任务 ----
-    log("📤 创建新的 cron-job（每 20 分钟）")
-    try:
-        resp = requests.put(
-            "https://api.cron-job.org/jobs",
-            headers=headers,
-            json={"job": job_payload},
-            timeout=30,
-        )
-        log(f"   PUT 响应: {resp.status_code} {resp.text[:300]}")
-        if resp.status_code == 200:
-            job_id = resp.json().get("jobId")
-            log(f"✅ cron-job 创建成功，ID: {job_id}，周期：每 20 分钟")
-            send_tg(f"📅 cron-job 已创建，ID: {job_id}，每 20 分钟触发")
-            return True
-        log(f"❌ 创建失败 HTTP {resp.status_code}: {resp.text[:300]}")
-        return False
-    except Exception as e:
-        log(f"❌ 调用 cron-job.org 异常: {e}")
-        return False
-
-
-# ================================================================
-# Playwright 登录 / 部署逻辑
-# ================================================================
 def screenshot(page, name):
     try:
         page.screenshot(path=f"{name}.png")
@@ -281,23 +75,29 @@ def wait_for_token(page, timeout=60000):
     try:
         page.wait_for_function(
             "() => localStorage.getItem('accessToken') !== null",
-            timeout=timeout,
+            timeout=timeout
         )
         return True
     except PlaywrightTimeoutError:
-        error_elem = page.locator(
-            ".error, .alert, .message:has-text('错误'), .message:has-text('Error')"
-        )
+        error_elem = page.locator(".error, .alert, .message:has-text('错误'), .message:has-text('Error')")
         if error_elem.count():
             err_text = error_elem.first.text_content()
             log(f"❌ 登录失败: {err_text}")
         return False
 
 
+# ---------- 通用：找到第一个可见且文本命中关键词的元素并点击 ----------
 def _click_first_visible(page, keywords):
+    """
+    遍历页面上的可交互元素，点击第一个可见且文本包含任一关键词的元素。
+    返回被点击元素的文本；未找到返回 None。
+    """
     selectors = [
-        "button", "[role='button']", "a[role='button']",
-        "input[type='submit']", "input[type='button']",
+        "button",
+        "[role='button']",
+        "a[role='button']",
+        "input[type='submit']",
+        "input[type='button']",
     ]
     for sel in selectors:
         try:
@@ -331,26 +131,38 @@ def _click_first_visible(page, keywords):
 
 
 def dismiss_popups(page, keywords=None, max_clicks=20, interval=1.0, label="弹窗通知"):
+    """
+    反复点击匹配关键词的按钮，直到页面上再也找不到为止。
+    用于关闭登录后弹出的通知/公告弹窗（例如 "Got it"）。
+    设置 max_clicks 上限以避免死循环。
+    """
     if keywords is None:
         keywords = NOTIFICATION_KEYWORDS
+
     clicked_texts = []
-    for _ in range(max_clicks):
+    for i in range(max_clicks):
         hit = _click_first_visible(page, keywords)
         if not hit:
             break
         clicked_texts.append(hit)
         log(f"🔔 关闭{label}（第 {len(clicked_texts)} 次）: '{hit}'")
         time.sleep(interval)
+
     if clicked_texts:
-        log(f"✅ 共关闭 {len(clicked_texts)} 个{label}按钮")
-        time.sleep(1)
+        log(f"✅ 共关闭 {len(clicked_texts)} 个{label}按钮，继续后续操作")
+        time.sleep(1)  # 等待弹窗动画完全结束
     else:
         log(f"ℹ️ 未发现{label}按钮，跳过")
     return len(clicked_texts)
 
 
 def click_button_by_keywords(page, keywords, total_timeout=60000):
+    """
+    根据关键词部分匹配（不区分大小写）点击按钮。
+    直接遍历所有候选元素，不进行去重。
+    """
     start_time = time.time()
+    # 打印页面上所有按钮文本（用于调试）
     all_buttons = page.locator("button, a[role='button'], [role='button']")
     count = all_buttons.count()
     if count > 0:
@@ -360,13 +172,17 @@ def click_button_by_keywords(page, keywords, total_timeout=60000):
                 text = all_buttons.nth(i).text_content().strip()
                 if text:
                     log(f"  {i+1}: {text}")
-            except Exception:
+            except:
                 pass
 
     selectors = [
-        "button", "a[role='button']", "[role='button']",
-        "input[type='submit']", "input[type='button']",
+        "button",
+        "a[role='button']",
+        "[role='button']",
+        "input[type='submit']",
+        "input[type='button']"
     ]
+
     while (time.time() - start_time) * 1000 < total_timeout:
         for sel in selectors:
             elements = page.query_selector_all(sel)
@@ -427,44 +243,7 @@ def process_account(username, password, account_index):
                 log("✅ 已填写邮箱")
                 screenshot(page, f"02_username_{account_index}")
 
-                # ---------- 密码框：多选择器兜底 ----------
-                password_input = None
-                for sel in [
-                    "#password",
-                    "input[type='password']",
-                    "input[name='password']",
-                    "input[placeholder*='密码']",
-                    "input[placeholder*='Password' i]",
-                ]:
-                    try:
-                        el = page.wait_for_selector(sel, timeout=8000, state="visible")
-                        if el:
-                            password_input = el
-                            log(f"✅ 命中密码框选择器: {sel}")
-                            break
-                    except PlaywrightTimeoutError:
-                        log(f"⏭️ 未命中: {sel}")
-                        continue
-
-                if not password_input:
-                    log("❌ 所有密码框选择器均失败，打印页面上的 input 元素：")
-                    try:
-                        inputs = page.query_selector_all("input")
-                        for i, el in enumerate(inputs):
-                            log(
-                                f"  input[{i}] type={el.get_attribute('type')} "
-                                f"name={el.get_attribute('name')} "
-                                f"id={el.get_attribute('id')} "
-                                f"placeholder={el.get_attribute('placeholder')} "
-                                f"visible={el.is_visible()}"
-                            )
-                    except Exception as e:
-                        log(f"  打印 input 失败: {e}")
-                    screenshot(page, f"05_password_not_found_{account_index}")
-                    raise RuntimeError(
-                        f"账号 {account_index} 找不到密码框，请下载截图和日志后检查"
-                    )
-
+                password_input = page.wait_for_selector("#password", timeout=10000)
                 password_input.fill(password)
                 log("✅ 已填写密码")
                 screenshot(page, f"03_password_{account_index}")
@@ -477,10 +256,7 @@ def process_account(username, password, account_index):
                 success = wait_for_token(page, timeout=30000)
                 if not success:
                     log("按 Enter 未触发登录，尝试点击登录按钮...")
-                    login_btn = page.locator(
-                        "button:has-text('登录'), button[type='submit'], "
-                        "button:has-text('Sign In'), button:has-text('Login')"
-                    )
+                    login_btn = page.locator("button:has-text('登录'), button[type='submit'], button:has-text('Sign In'), button:has-text('Login')")
                     if login_btn.count():
                         login_btn.first.click()
                         success = wait_for_token(page, timeout=30000)
@@ -494,7 +270,7 @@ def process_account(username, password, account_index):
             page.wait_for_load_state("networkidle", timeout=10000)
             time.sleep(3)
 
-            # ---------- 0. 关闭弹窗通知 ----------
+            # ---------- 0. 关闭登录后弹出的通知弹窗（如 "Got it"），直到按钮消失 ----------
             log(f"🔔 检查弹窗通知，关键词列表：{NOTIFICATION_KEYWORDS}")
             dismiss_popups(page, NOTIFICATION_KEYWORDS, max_clicks=20, interval=1.0)
             screenshot(page, f"06b_after_dismiss_{account_index}")
@@ -512,6 +288,7 @@ def process_account(username, password, account_index):
 
             # ---------- 2. 点击打开 QwenPaw 按钮 ----------
             log(f"🔍 尝试点击 QwenPaw 按钮，关键词列表：{QWEN_KEYWORDS}")
+            # 处理可能的新窗口
             with context.expect_page() as new_page_info:
                 if not click_button_by_keywords(page, QWEN_KEYWORDS, total_timeout=60000):
                     screenshot(page, f"08_qwen_failed_{account_index}")
@@ -522,7 +299,7 @@ def process_account(username, password, account_index):
                     log("✅ 新页面（QwenPaw）已加载")
                     screenshot(new_page, f"09_qwen_newpage_{account_index}")
                     new_page.close()
-                except Exception:
+                except:
                     log("未检测到新页面，可能在当前页面打开，等待加载...")
                     page.wait_for_load_state("networkidle", timeout=10000)
                     screenshot(page, f"09_qwen_currentpage_{account_index}")
@@ -538,18 +315,11 @@ def process_account(username, password, account_index):
 
 
 def run():
-    # ====== 每次运行都把 cron-job.org 任务校正为"每 20 分钟" ======
-    log("📅 检查/更新 cron-job.org 周期任务（每 20 分钟）...")
-    try:
-        schedule_cronjob()
-    except Exception as e:
-        log(f"⚠️ 调度异常（不影响本次运行）: {e}")
-
     accounts_json = os.getenv("ACCOUNTS_JSON", "")
     if accounts_json:
         try:
             accounts = json.loads(accounts_json)
-        except Exception:
+        except:
             log("❌ 解析 ACCOUNTS_JSON 失败")
             sys.exit(1)
     else:
@@ -568,16 +338,19 @@ def run():
             log(f"⚠️ 账号 {idx} 缺少用户名或密码，跳过")
             continue
 
+        start_utc = datetime.now(timezone.utc)
         success = process_account(username, password, idx)
         end_utc = datetime.now(timezone.utc)
+
         beijing_time = end_utc.astimezone(BEIJING_TZ)
         time_str = beijing_time.strftime("%Y-%m-%d %H:%M:%S")
+
         status_text = "✅ 成功" if success else "❌ 失败"
         account_results.append({
             "username": username,
             "time": time_str,
             "status": status_text,
-            "success": success,
+            "success": success
         })
         time.sleep(2)
 
@@ -586,9 +359,11 @@ def run():
     fail_count = total - success_count
     success_rate = (success_count / total * 100) if total > 0 else 0
 
-    lines = ["📨 Agentscope 多账号任务报告", ""]
+    lines = []
+    lines.append("📨 Agentscope 多账号任务报告")
+    lines.append("")
     for r in account_results:
-        lines.append("🖥️ 平台: Agentscope")
+        lines.append(f"🖥️ 平台: Agentscope")
         lines.append(f"👤 账号: {r['username']}")
         lines.append(f"⏰ 时间: {r['time']}")
         lines.append(r["status"])
@@ -603,10 +378,18 @@ def run():
     log("📤 发送 Telegram 汇总报告...")
     send_tg(message)
 
-    sys.exit(1 if fail_count > 0 else 0)
+    if fail_count > 0:
+        sys.exit(1)
+    else:
+        sys.exit(0)
 
 
 if __name__ == "__main__":
+    try:
+        run()
+    except Exception as e:
+        log(f"❌ 脚本退出: {e}")
+        sys.exit(1)
     try:
         run()
     except Exception as e:
