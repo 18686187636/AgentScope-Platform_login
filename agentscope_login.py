@@ -14,7 +14,7 @@ HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TG_CHAT_ID", "")
 
-# ---------- 调度相关 ----------
+# ---------- cron-job.org 调度相关 ----------
 GH_TOKEN = os.getenv("GH_TOKEN", "")
 REPO_OWNER = os.getenv("REPO_OWNER", "")
 REPO_NAME = os.getenv("REPO_NAME", "")
@@ -22,7 +22,7 @@ WORKFLOW_FILE = os.getenv("WORKFLOW_FILE", "agentscope.yml")
 BRANCH = os.getenv("BRANCH", "main")
 CRONJOB_API_KEY = os.getenv("CRONJOB_API_KEY", "")
 
-# ---------- 关键词 ----------
+# ---------- 默认关键词 ----------
 DEFAULT_DEPLOY_KEYWORDS = ["Deploy QwenPaw", "一键部署 QwenPaw", "部署", "Deploy"]
 DEFAULT_QWEN_KEYWORDS = ["Open QWENPAW", "打开 QWENPAW", "打开QWENPAW"]
 DEFAULT_NOTIFICATION_KEYWORDS = [
@@ -62,17 +62,30 @@ def log(msg):
 def send_tg(msg):
     if TG_TOKEN and TG_CHAT:
         try:
-            requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-                          json={"chat_id": TG_CHAT, "text": msg}, timeout=10)
+            requests.post(
+                f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                json={"chat_id": TG_CHAT, "text": msg},
+                timeout=10,
+            )
         except Exception as e:
             log(f"Telegram 发送失败: {e}")
 
 
-# ============ cron-job.org 调度 ============
+# ================================================================
+# cron-job.org 自动调度
+# ================================================================
 def get_github_workflow_id():
+    """通过 GitHub API 获取 workflow 的数字 ID。"""
     if not (GH_TOKEN and REPO_OWNER and REPO_NAME and WORKFLOW_FILE):
-        log("⚠️ 缺少 GH_TOKEN/REPO_OWNER/REPO_NAME/WORKFLOW_FILE，跳过 workflow_id 获取")
+        missing = [k for k, v in {
+            "GH_TOKEN": GH_TOKEN,
+            "REPO_OWNER": REPO_OWNER,
+            "REPO_NAME": REPO_NAME,
+            "WORKFLOW_FILE": WORKFLOW_FILE,
+        }.items() if not v]
+        log(f"⚠️ 获取 workflow_id 所需变量缺失: {missing}")
         return None
+
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/actions/workflows"
     headers = {
         "Accept": "application/vnd.github+json",
@@ -81,6 +94,7 @@ def get_github_workflow_id():
     }
     try:
         resp = requests.get(url, headers=headers, timeout=30)
+        log(f"   GET workflows 响应: {resp.status_code}")
         resp.raise_for_status()
         for wf in resp.json().get("workflows", []):
             wf_path = wf.get("path", "")
@@ -89,30 +103,33 @@ def get_github_workflow_id():
                     or os.path.basename(wf_path) == os.path.basename(WORKFLOW_FILE)):
                 log(f"✅ 工作流匹配: {wf_path} (ID: {wf['id']})")
                 return wf["id"]
-        log(f"❌ 未匹配到工作流: {WORKFLOW_FILE}")
+        log(f"❌ 未匹配到工作流，期望文件名: {WORKFLOW_FILE}")
         return None
     except Exception as e:
-        log(f"❌ 获取 workflow id 失败: {e}")
+        log(f"❌ 获取 workflow_id 失败: {e}")
         return None
 
 
 def list_cronjobs():
+    """获取 cron-job.org 下所有任务。"""
     try:
         resp = requests.get(
             "https://api.cron-job.org/jobs",
             headers={"Authorization": f"Bearer {CRONJOB_API_KEY}"},
             timeout=30,
         )
+        log(f"   GET cron-jobs 响应: {resp.status_code}")
         if resp.status_code == 200:
             return resp.json().get("jobs", [])
-        log(f"获取任务列表失败: HTTP {resp.status_code}")
+        log(f"   获取任务列表失败: {resp.text[:200]}")
         return []
     except Exception as e:
-        log(f"获取任务列表异常: {e}")
+        log(f"   获取任务列表异常: {e}")
         return []
 
 
 def delete_cronjob(job_id):
+    """删除 cron-job.org 指定任务。"""
     try:
         resp = requests.delete(
             f"https://api.cron-job.org/jobs/{job_id}",
@@ -122,31 +139,46 @@ def delete_cronjob(job_id):
         if resp.status_code == 200:
             log(f"🗑️ 已删除旧任务 {job_id}")
             return True
-        log(f"删除任务 {job_id} 失败: HTTP {resp.status_code}")
+        log(f"   删除任务 {job_id} 失败: HTTP {resp.status_code}")
         return False
     except Exception as e:
-        log(f"删除任务异常: {e}")
+        log(f"   删除任务异常: {e}")
         return False
 
 
 def schedule_cronjob():
-    """创建/更新 cron-job.org 任务：每 20 分钟（0/20/40 分）触发一次 workflow_dispatch。"""
-    if not (CRONJOB_API_KEY and GH_TOKEN and REPO_OWNER and REPO_NAME):
-        log("⚠️ 调度所需 secret 不全，跳过 cron-job 设置")
+    """
+    创建/更新 cron-job.org 周期任务：每 20 分钟（0/20/40 分）POST dispatches 触发 workflow。
+    - 若已存在相同 URL 的任务：PATCH 更新其 schedule
+    - 若不存在：PUT 新建
+    - expiresAt 每次延长 1 年，实际永不过期
+    """
+    # ---- 1. 检查必需变量 ----
+    required = {
+        "CRONJOB_API_KEY": CRONJOB_API_KEY,
+        "GH_TOKEN": GH_TOKEN,
+        "REPO_OWNER": REPO_OWNER,
+        "REPO_NAME": REPO_NAME,
+    }
+    missing = [k for k, v in required.items() if not v]
+    if missing:
+        log(f"⚠️ 调度所需 secret 不全，缺少: {missing}，跳过 cron-job 设置")
         return False
 
+    # ---- 2. 获取 workflow 数字 ID ----
     workflow_id = get_github_workflow_id()
     if not workflow_id:
+        log("⚠️ 无法获取 workflow id，跳过调度")
         return False
 
+    # ---- 3. 构造周期调度 ----
     now_utc = datetime.now(timezone.utc)
-    # 每 20 分钟周期调度
     schedule = {
-        "minutes": [0, 20, 40],
-        "hours": [-1],
-        "mdays": [-1],
-        "months": [-1],
-        "wdays": [-1],
+        "minutes": [0, 20, 40],   # 每小时 0/20/40 分
+        "hours": [-1],            # 每小时
+        "mdays": [-1],            # 每天
+        "months": [-1],           # 每月
+        "wdays": [-1],            # 每周每天
         "timezone": "UTC",
         "expiresAt": (now_utc + timedelta(days=365)).strftime("%Y%m%d%H%M%S"),
     }
@@ -159,7 +191,7 @@ def schedule_cronjob():
     job_payload = {
         "enabled": True,
         "url": github_url,
-        "requestMethod": 1,  # POST
+        "requestMethod": 1,       # 1 = POST
         "saveResponses": True,
         "schedule": schedule,
         "extendedData": {
@@ -174,18 +206,26 @@ def schedule_cronjob():
         },
     }
 
+    # ---- 4. 打印待发送配置 ----
+    log(f"🔧 即将配置 cron-job:")
+    log(f"   URL        : {github_url}")
+    log(f"   Method     : POST")
+    log(f"   Body       : {json.dumps({'ref': BRANCH})}")
+    log(f"   Minutes    : {schedule['minutes']}")
+    log(f"   expiresAt  : {schedule['expiresAt']}")
+
     headers = {
         "Authorization": f"Bearer {CRONJOB_API_KEY}",
         "Content-Type": "application/json",
     }
 
-    # 找到已有任务并更新
+    # ---- 5. 查找已有任务 ----
     existing = list_cronjobs()
     matched = next((j for j in existing if j.get("url") == github_url), None)
 
     if matched:
         job_id = matched.get("jobId")
-        log(f"📌 更新已有任务 ID: {job_id}")
+        log(f"📌 发现已存在任务 ID: {job_id}，尝试更新")
         try:
             resp = requests.patch(
                 f"https://api.cron-job.org/jobs/{job_id}",
@@ -193,17 +233,18 @@ def schedule_cronjob():
                 json={"job": job_payload},
                 timeout=30,
             )
+            log(f"   PATCH 响应: {resp.status_code} {resp.text[:200]}")
             if resp.status_code == 200:
-                log(f"✅ cron-job 更新成功，周期：每 20 分钟")
+                log(f"✅ cron-job 更新成功，周期：每 20 分钟（0/20/40 分）")
                 send_tg(f"🔄 cron-job 已更新，ID: {job_id}，每 20 分钟触发")
                 return True
-            log(f"⚠️ 更新失败 HTTP {resp.status_code}: {resp.text[:300]}，尝试重建")
+            log(f"⚠️ 更新失败，尝试删除后重建")
             delete_cronjob(job_id)
         except Exception as e:
-            log(f"⚠️ 更新异常: {e}，尝试重建")
+            log(f"⚠️ 更新异常: {e}，尝试删除后重建")
             delete_cronjob(job_id)
 
-    # 新建
+    # ---- 6. 新建任务 ----
     log("📤 创建新的 cron-job（每 20 分钟）")
     try:
         resp = requests.put(
@@ -212,9 +253,10 @@ def schedule_cronjob():
             json={"job": job_payload},
             timeout=30,
         )
+        log(f"   PUT 响应: {resp.status_code} {resp.text[:300]}")
         if resp.status_code == 200:
             job_id = resp.json().get("jobId")
-            log(f"✅ cron-job 创建成功，ID: {job_id}")
+            log(f"✅ cron-job 创建成功，ID: {job_id}，周期：每 20 分钟")
             send_tg(f"📅 cron-job 已创建，ID: {job_id}，每 20 分钟触发")
             return True
         log(f"❌ 创建失败 HTTP {resp.status_code}: {resp.text[:300]}")
@@ -224,7 +266,9 @@ def schedule_cronjob():
         return False
 
 
-# ============ 以下为原脚本逻辑（未改动） ============
+# ================================================================
+# Playwright 登录 / 部署逻辑
+# ================================================================
 def screenshot(page, name):
     try:
         page.screenshot(path=f"{name}.png")
@@ -290,7 +334,7 @@ def dismiss_popups(page, keywords=None, max_clicks=20, interval=1.0, label="弹�
     if keywords is None:
         keywords = NOTIFICATION_KEYWORDS
     clicked_texts = []
-    for i in range(max_clicks):
+    for _ in range(max_clicks):
         hit = _click_first_visible(page, keywords)
         if not hit:
             break
@@ -383,7 +427,44 @@ def process_account(username, password, account_index):
                 log("✅ 已填写邮箱")
                 screenshot(page, f"02_username_{account_index}")
 
-                password_input = page.wait_for_selector("#password", timeout=10000)
+                # ---------- 密码框：多选择器兜底 ----------
+                password_input = None
+                for sel in [
+                    "#password",
+                    "input[type='password']",
+                    "input[name='password']",
+                    "input[placeholder*='密码']",
+                    "input[placeholder*='Password' i]",
+                ]:
+                    try:
+                        el = page.wait_for_selector(sel, timeout=8000, state="visible")
+                        if el:
+                            password_input = el
+                            log(f"✅ 命中密码框选择器: {sel}")
+                            break
+                    except PlaywrightTimeoutError:
+                        log(f"⏭️ 未命中: {sel}")
+                        continue
+
+                if not password_input:
+                    log("❌ 所有密码框选择器均失败，打印页面上的 input 元素：")
+                    try:
+                        inputs = page.query_selector_all("input")
+                        for i, el in enumerate(inputs):
+                            log(
+                                f"  input[{i}] type={el.get_attribute('type')} "
+                                f"name={el.get_attribute('name')} "
+                                f"id={el.get_attribute('id')} "
+                                f"placeholder={el.get_attribute('placeholder')} "
+                                f"visible={el.is_visible()}"
+                            )
+                    except Exception as e:
+                        log(f"  打印 input 失败: {e}")
+                    screenshot(page, f"05_password_not_found_{account_index}")
+                    raise RuntimeError(
+                        f"账号 {account_index} 找不到密码框，请下载截图和日志后检查"
+                    )
+
                 password_input.fill(password)
                 log("✅ 已填写密码")
                 screenshot(page, f"03_password_{account_index}")
@@ -413,10 +494,12 @@ def process_account(username, password, account_index):
             page.wait_for_load_state("networkidle", timeout=10000)
             time.sleep(3)
 
+            # ---------- 0. 关闭弹窗通知 ----------
             log(f"🔔 检查弹窗通知，关键词列表：{NOTIFICATION_KEYWORDS}")
             dismiss_popups(page, NOTIFICATION_KEYWORDS, max_clicks=20, interval=1.0)
             screenshot(page, f"06b_after_dismiss_{account_index}")
 
+            # ---------- 1. 点击部署按钮 ----------
             log(f"🔍 尝试点击部署按钮，关键词列表：{DEPLOY_KEYWORDS}")
             if not click_button_by_keywords(page, DEPLOY_KEYWORDS, total_timeout=60000):
                 screenshot(page, f"07_deploy_failed_{account_index}")
@@ -427,6 +510,7 @@ def process_account(username, password, account_index):
             page.wait_for_timeout(15000)
             page.wait_for_load_state("networkidle", timeout=10000)
 
+            # ---------- 2. 点击打开 QwenPaw 按钮 ----------
             log(f"🔍 尝试点击 QwenPaw 按钮，关键词列表：{QWEN_KEYWORDS}")
             with context.expect_page() as new_page_info:
                 if not click_button_by_keywords(page, QWEN_KEYWORDS, total_timeout=60000):
@@ -454,7 +538,7 @@ def process_account(username, password, account_index):
 
 
 def run():
-    # ====== 关键：每次运行开头先安排下一次 20 分钟后的触发 ======
+    # ====== 每次运行都把 cron-job.org 任务校正为"每 20 分钟" ======
     log("📅 检查/更新 cron-job.org 周期任务（每 20 分钟）...")
     try:
         schedule_cronjob()
