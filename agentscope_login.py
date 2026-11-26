@@ -277,7 +277,7 @@ def process_account(username, password, account_index):
 
             # ---------- 1. 点击部署按钮 ----------
             log(f"🔍 尝试点击部署按钮，关键词列表：{DEPLOY_KEYWORDS}")
-            if not click_button_by_keywords(page, DEPLOY_KEYWORDS, total_timeout=60000):
+            if not click_button_by_keywords(page, DEPLOY_KEYWORDS, total_timeout=100000):
                 screenshot(page, f"07_deploy_failed_{account_index}")
                 raise RuntimeError(f"账号 {account_index} 无法点击部署按钮")
             screenshot(page, f"07_deploy_clicked_{account_index}")
