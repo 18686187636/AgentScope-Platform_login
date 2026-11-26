@@ -290,7 +290,7 @@ def process_account(username, password, account_index):
             log(f"🔍 尝试点击 QwenPaw 按钮，关键词列表：{QWEN_KEYWORDS}")
             # 处理可能的新窗口
             with context.expect_page() as new_page_info:
-                if not click_button_by_keywords(page, QWEN_KEYWORDS, total_timeout=100000):
+                if not click_button_by_keywords(page, QWEN_KEYWORDS, total_timeout=60000):
                     screenshot(page, f"08_qwen_failed_{account_index}")
                     raise RuntimeError(f"账号 {account_index} 无法点击 QwenPaw 按钮")
                 try:
